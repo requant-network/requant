@@ -31,7 +31,7 @@ an early refund and a late claim are refused. Energy per call (the caller pays a
 
 | Call | Energy | Burned at Nile prices |
 |---|---|---|
-| USDT `approve` (once) | 22,688 | 0.3 TRX |
+| USDT `approve` (once) | 22,688 | 0.3 TRX (the Nile USDT contract pays part of its energy) |
 | `lock` | 43,638 (58,638 for a first lock) | 4.8 TRX |
 | `claim` | 27,403 | 3.2 TRX |
 | `refund` | 26,500 | 3.1 TRX |

@@ -6,7 +6,7 @@ is the step that makes the work hard to shortcut: exact integer **requant**izati
 The work function is called **TNet**.
 
 **Status: pre-alpha; a public test network is running** ([`TESTNET.md`](TESTNET.md), explorer
-http://193.187.93.29:19380/). The work
+http://pool.requant.network:19380/). The work
 function (**TNet v1**) is frozen with test vectors and reference implementations; a node, a wallet and a GPU
 miner exist; there is no main network and the test coins have no value. See [`ROADMAP.md`](ROADMAP.md).
 Nothing here is a security or investment claim.
@@ -17,7 +17,7 @@ Nothing here is a security or investment claim.
    [latest release](https://github.com/requant-network/requant/releases/latest) and make a wallet:
    `requant-wallet create my.wallet` shows a 24-word backup phrase (write it down) and your address
    (`trq1...`); `requant-wallet address my.wallet` prints it again with its key hash.
-2. **Test coins.** The **faucet** at http://193.187.93.29:19380/faucet sends 10 RQT to your address, once a
+2. **Test coins.** The **faucet** at http://pool.requant.network:19380/faucet sends 10 RQT to your address, once a
    day per address. Mined more than you need? Top it up:
    `trq1q8pqnx3uqer6jcxszen4tg3hylh5q645ae23yvra62a2nu98slqaqvvyume`.
 3. **Mine.** The GPU miner is **CPPminer** (NVIDIA, RTX 20xx / Turing or newer): download
@@ -26,20 +26,20 @@ Nothing here is a security or investment claim.
    `cppminer --algo tnet --selftest`, and mine in the pool:
 
    ```sh
-   cppminer --algo tnet --rpc 193.187.93.29:19340 --payee <your key hash> --worker rig1
+   cppminer --algo tnet --rpc pool.requant.network:19340 --payee <your key hash> --worker rig1
    ```
 
    The pool pays PPLNS (1% fee) automatically from 1 RQT, 100 blocks after a block is found; your
-   devices and payouts are on the [pool page](http://193.187.93.29:19380/pool).
+   devices and payouts are on the [pool page](http://pool.requant.network:19380/pool).
 4. **Look around.** Blocks, transactions and any address on the
-   [explorer](http://193.187.93.29:19380/); peers and pending transactions on the
-   [network page](http://193.187.93.29:19380/network).
+   [explorer](http://pool.requant.network:19380/); peers and pending transactions on the
+   [network page](http://pool.requant.network:19380/network).
 5. **Send.** Without a node of your own the wallet uses the explorer's public API:
-   `requant-wallet balance my.wallet --api http://193.187.93.29:19380` and
-   `requant-wallet send my.wallet <address> 1.5 --api http://193.187.93.29:19380` (keys stay on your
+   `requant-wallet balance my.wallet --api http://pool.requant.network:19380` and
+   `requant-wallet send my.wallet <address> 1.5 --api http://pool.requant.network:19380` (keys stay on your
    machine; that node sees which addresses you ask about).
 6. **Run a node** (optional): `requantd` from the same release,
-   `requantd --network test --connect 193.187.93.29:19333`; the wallet then talks to it by default. With
+   `requantd --network test --connect pool.requant.network:19333`; the wallet then talks to it by default. With
    `--auto-update` it installs new signed releases by itself. Everything else: [`TESTNET.md`](TESTNET.md).
 
 ## How the work function works
