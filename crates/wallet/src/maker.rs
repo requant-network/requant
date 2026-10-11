@@ -108,6 +108,9 @@ impl Maker {
         if self.swaps.iter().any(|s| s["id"] == json!(id)) {
             return Err("a swap with this hash exists: use a new secret".into());
         }
+        if self.cfg.bitcoind.syncing()? {
+            return Err("the maker's Bitcoin node is still syncing: try again later".into());
+        }
         let btc_tip = self.cfg.bitcoind.height()?;
         let h = btc::Htlc { hash, claim: self.btc_pubkey(), refund, timeout: btc_tip + BTC_TIMEOUT_BLOCKS };
         let sats = swap::price(rqt_atoms, self.cfg.sats_per_rqt);

@@ -1,6 +1,7 @@
 //! `requant-maker`: sells RQT for BTC over atomic swaps (SWAPS.md §1; protocol in `swap.rs`).
 //!
 //! requant-maker btc-keygen FILE          a Bitcoin key for the maker's claims (hex, kept private)
+//! requant-maker btc-address FILE NETWORK the P2WPKH address of that key (a place for the BTC it claims)
 //! requant-maker run CONFIG.json          serve takers and run the swaps
 //!
 //! CONFIG.json:
@@ -83,6 +84,12 @@ fn main() {
             std::fs::write(file, hex(&secret)).unwrap_or_else(|e| die(&e.to_string()));
             println!("Bitcoin key written to {file} (keep it private)\npubkey {pubkey}");
         }
+        ["btc-address", file, network] => {
+            let net = btc::network(network).unwrap_or_else(|e| die(&e));
+            let pubkey = btc::public_key(&key32(file)).unwrap_or_else(|e| die(&e));
+            let compressed = bitcoin::CompressedPublicKey::try_from(pubkey).unwrap_or_else(|e| die(&e.to_string()));
+            println!("{}", bitcoin::Address::p2wpkh(&compressed, net));
+        }
         ["run", path] => {
             let (cfg, listen, tick) = config(path);
             let maker = Arc::new(Mutex::new(Maker::new(cfg).unwrap_or_else(|e| die(&e))));
@@ -114,6 +121,6 @@ fn main() {
                 std::thread::sleep(std::time::Duration::from_secs(tick));
             }
         }
-        _ => die("usage: requant-maker btc-keygen FILE | run CONFIG.json"),
+        _ => die("usage: requant-maker btc-keygen FILE | btc-address FILE NETWORK | run CONFIG.json"),
     }
 }

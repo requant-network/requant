@@ -247,11 +247,19 @@ impl Bitcoind {
         Ok(txid.as_str().unwrap_or_default().to_string())
     }
 
-    /// Confirmations of a transaction this node knows (0 while pooled; None when unknown).
+    /// Confirmations of a transaction this node knows (0 while pooled; None when unknown). A pruned node
+    /// without -txindex finds a confirmed one through its first output while that is unspent.
     pub fn confirmations(&self, txid: &str) -> Option<u64> {
-        self.call("getrawtransaction", serde_json::json!([txid, true]))
-            .ok()
-            .map(|v| v["confirmations"].as_u64().unwrap_or(0))
+        if let Ok(v) = self.call("getrawtransaction", serde_json::json!([txid, true])) {
+            return Some(v["confirmations"].as_u64().unwrap_or(0));
+        }
+        let out = self.call("gettxout", serde_json::json!([txid, 0, true])).ok()?;
+        out["confirmations"].as_u64()
+    }
+
+    /// Whether the node is still catching up with the chain.
+    pub fn syncing(&self) -> Result<bool, String> {
+        Ok(self.call("getblockchaininfo", serde_json::json!([]))?["initialblockdownload"].as_bool().unwrap_or(true))
     }
 
     /// A fee rate in satoshis per virtual byte for confirmation within `blocks` (2 when the node has no estimate).
