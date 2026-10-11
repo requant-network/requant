@@ -70,6 +70,26 @@ needs a Bitcoin Core node and a Requant node API. `tests/test_swap_e2e.py` runs 
 (a completed swap, an underpaid and a late one refunded to the taker, one the taker never claims) with
 `BITCOIND=/path/to/bitcoind`.
 
+### Implemented: paying over Lightning (wallet 0.8.0)
+
+Lightning payments are locked by the SHA-256 of a 32-byte preimage, as Requant HTLCs are, so the same
+secret ties both sides and nothing waits for Bitcoin confirmations:
+
+1. `requant-wallet swap buy-ln MAKER AMOUNT WALLET --out SWAP.json`: the maker's LND makes a *hold
+   invoice* locked by the taker's hash (it cannot take the payment: it does not know the secret). The
+   wallet decodes the invoice and refuses it unless its payment hash is the taker's own, its network
+   the maker's and its amount the price. The taker pays it from any Lightning wallet.
+2. Once LND holds the payment, `requant-maker` locks the RQT for 60 Requant blocks (about an hour), but
+   only while the held payment has at least 18 Bitcoin blocks (about three hours) left.
+3. `swap claim` takes the RQT and reveals the secret; the maker settles the invoice with it.
+
+A payment the maker does not complete (underpaid, too little time left, the RQT could not be locked,
+or the taker never claimed and the maker took the RQT back) is cancelled, and it goes back to the
+taker's Lightning wallet by itself: no refund to wait for. The maker needs LND with `--no-rest-tls` on
+its own host and a macaroon that can add, settle and cancel invoices. `tests/test_swap_ln_e2e.py`
+runs it on regtest with two LND nodes (BITCOIND=... LND=...): a completed swap, a lock the maker
+cannot make, and an unclaimed swap.
+
 **Privacy: weak, and it should be said so.** The same `H` appears on both chains, and the amounts and
 timing match. Anyone watching both chains can link the two halves. The HTLC is also visible on RQT
 when it is spent: its claim or refund path is revealed.

@@ -80,7 +80,9 @@ test network.
 - [ ] One-way channels in MagnetGate: the service accepts states for traffic; a wallet in the apps.
 - [x] RQT<->BTC swaps with a maker (wallet 0.8.0): Bitcoin P2WSH HTLC, `swap buy/status/claim/refund`,
       `requant-maker`; both chains tested together on regtest.
-- [ ] The maker on the test networks (Requant testnet + Bitcoin signet); a Buy RQT screen in the apps.
+- [x] Paying over Lightning (wallet 0.8.0): hold invoices with the taker's hash, `swap buy-ln`, LND in
+      `requant-maker`; a payment the maker does not complete goes back by itself; tested on regtest.
+- [ ] The maker on the test networks (Requant testnet + Bitcoin signet, LND); a Buy RQT screen in the apps.
 - [ ] Litecoin, Bitcoin Cash and Dogecoin on the same HTLC; EVM, TRON and TON contracts.
 - [ ] RQT↔XMR swaps: ed25519 adaptor signatures, MuSig2 key aggregation, cancel/refund/punish
       transfers; external cryptographic review before real value.

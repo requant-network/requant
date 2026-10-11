@@ -11,6 +11,9 @@
 //!  "min_rqt": 10000000, "max_rqt": 10000000000, "listen": "127.0.0.1:19390", "state": "maker-state.json",
 //!  "tick_seconds": 10}
 //!
+//! Optional Lightning: "lnd": {"rest": "127.0.0.1:8080", "macaroon": "invoices.macaroon"} (LND with
+//! --no-rest-tls on the same host; a macaroon that may add, settle and cancel invoices).
+//!
 //! `rqt_key` is a requant-wallet key file (REQUANT_WALLET_PASSPHRASE when it is encrypted); it pays the
 //! RQT locks and receives refunds. `bitcoind_auth` holds `user:password` or is the node's `.cookie`.
 //! Takers call JSON-RPC `info`, `swap_create [rqt_atoms, hash, btc_refund_pubkey, rqt_address]` and
@@ -63,6 +66,12 @@ fn config(path: &str) -> (Config, String, u64) {
         bitcoind,
         btc_key: key32(&s("btc_key")),
         btc_payout,
+        lnd: c["lnd"].as_object().map(|l| {
+            let rest = l.get("rest").and_then(|v| v.as_str()).unwrap_or_else(|| die("lnd.rest missing"));
+            let mac = l.get("macaroon").and_then(|v| v.as_str()).unwrap_or_else(|| die("lnd.macaroon missing"));
+            let bytes = std::fs::read(mac).unwrap_or_else(|e| die(&format!("{mac}: {e}")));
+            requant_wallet::ln::Lnd::new(rest, &bytes).unwrap_or_else(|e| die(&e))
+        }),
         sats_per_rqt: n("sats_per_rqt"),
         min_rqt: n("min_rqt"),
         max_rqt: n("max_rqt"),
@@ -105,6 +114,13 @@ fn main() {
                             arg(k).and_then(|v| v.as_str().map(str::to_string).ok_or(format!("parameter {k}: text")))
                         };
                         mk.create(atoms, &text(1)?, &text(2)?, &text(3)?)
+                    }
+                    "swap_create_ln" => {
+                        let atoms = arg(0)?.as_u64().ok_or("parameter 0: atoms")?;
+                        let text = |k: usize| {
+                            arg(k).and_then(|v| v.as_str().map(str::to_string).ok_or(format!("parameter {k}: text")))
+                        };
+                        mk.create_ln(atoms, &text(1)?, &text(2)?)
                     }
                     "swap_status" => mk.status(arg(0)?.as_str().ok_or("parameter 0: id")?),
                     _ => Err(format!("unknown method {method}")),

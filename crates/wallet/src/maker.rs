@@ -11,6 +11,7 @@
 use crate::backend::Backend;
 use crate::btc::{self, Bitcoind};
 use crate::contracts::{self, Condition};
+use crate::ln::Lnd;
 use crate::swap::{self, BTC_TIMEOUT_BLOCKS, MIN_BTC_BLOCKS_LEFT, RQT_TIMEOUT_BLOCKS};
 use crate::{owner_of, plan_payment, sign_with, Spendable};
 use ed25519_dalek::SigningKey;
@@ -22,6 +23,15 @@ use std::collections::HashMap;
 
 /// Bitcoin blocks (about two hours) the taker has to pay a new swap; later payments are not answered.
 pub const FUNDING_WINDOW: u32 = 12;
+/// Lightning swaps: the invoice is payable for ten minutes and asks 80 blocks at the end of the route;
+/// the RQT stay locked for 60 Requant blocks (about an hour); the maker locks only while the held payment
+/// has at least 18 Bitcoin blocks (about three hours) left, so the secret always comes before it expires.
+pub const LN_INVOICE_SECONDS: u64 = 600;
+pub const LN_CLTV: u64 = 80;
+pub const LN_RQT_TIMEOUT_BLOCKS: u64 = 60;
+pub const LN_MIN_BLOCKS_LEFT: u64 = 18;
+const _: () = assert!(LN_RQT_TIMEOUT_BLOCKS * 60 * 2 <= LN_MIN_BLOCKS_LEFT * 600);
+
 /// The Requant fee rate of the maker's locks and refunds (atoms per byte).
 const RQT_FEE_RATE: u64 = 2;
 
@@ -33,6 +43,8 @@ pub struct Config {
     pub bitcoind: Bitcoind,
     pub btc_key: [u8; 32],
     pub btc_payout: bitcoin::Address,
+    /// The maker's Lightning node, for swaps paid over Lightning.
+    pub lnd: Option<Lnd>,
     pub sats_per_rqt: u64,
     pub min_rqt: u64,
     pub max_rqt: u64,
@@ -90,7 +102,8 @@ impl Maker {
                "sats_per_rqt": self.cfg.sats_per_rqt, "min_rqt": self.cfg.min_rqt, "max_rqt": self.cfg.max_rqt,
                "btc_pubkey": self.btc_pubkey().to_string(), "rqt_refund": hex(&self.me()),
                "btc_timeout_blocks": BTC_TIMEOUT_BLOCKS, "rqt_timeout_blocks": RQT_TIMEOUT_BLOCKS,
-               "funding_window_blocks": FUNDING_WINDOW})
+               "funding_window_blocks": FUNDING_WINDOW, "lightning": self.cfg.lnd.is_some(),
+               "ln_rqt_timeout_blocks": LN_RQT_TIMEOUT_BLOCKS})
     }
 
     /// A new swap: the taker's amount, secret hash, Bitcoin refund key and Requant address (key hash).
@@ -123,6 +136,27 @@ impl Maker {
         Ok(s)
     }
 
+    /// A new swap paid over Lightning: a hold invoice locked by the taker's hash.
+    pub fn create_ln(&mut self, rqt_atoms: u64, hash: &str, claim: &str) -> Result<Value, String> {
+        let lnd = self.cfg.lnd.as_ref().ok_or("this maker takes no Lightning payments")?;
+        if rqt_atoms < self.cfg.min_rqt || rqt_atoms > self.cfg.max_rqt {
+            return Err(format!("amount: from {} to {} atoms", self.cfg.min_rqt, self.cfg.max_rqt));
+        }
+        let hash: [u8; 32] = unhex(hash).ok().and_then(|b| b.try_into().ok()).ok_or("hash: 64 hex digits")?;
+        let claim = contracts::who(&self.cfg.rqt_network, claim)?;
+        let id = hex(&hash);
+        if self.swaps.iter().any(|s| s["id"] == json!(id)) {
+            return Err("a swap with this hash exists: use a new secret".into());
+        }
+        let sats = swap::price(rqt_atoms, self.cfg.sats_per_rqt);
+        let bolt11 = lnd.add_hold_invoice(&hash, sats, LN_INVOICE_SECONDS, LN_CLTV, "RQT")?;
+        let s = json!({"id": id, "kind": "ln", "state": "waiting_ln", "created": now(), "rqt_atoms": rqt_atoms,
+                       "btc_sats": sats, "taker_claim": hex(&claim), "bolt11": bolt11});
+        self.swaps.push(s.clone());
+        self.save()?;
+        Ok(s)
+    }
+
     pub fn status(&self, id: &str) -> Result<Value, String> {
         self.swaps.iter().find(|s| s["id"] == json!(id)).cloned().ok_or("no such swap".into())
     }
@@ -141,6 +175,7 @@ impl Maker {
             let state = self.swaps[k]["state"].as_str().unwrap_or("").to_string();
             let step = match state.as_str() {
                 "waiting_btc" => self.step_funding(k, btc_tip, rqt_tip),
+                "waiting_ln" => self.step_ln(k, btc_tip, rqt_tip),
                 "rqt_locked" => self.step_locked(k, rqt_tip),
                 "btc_claimed" => self.step_claimed(k),
                 _ => Ok(None),
@@ -210,6 +245,54 @@ impl Maker {
         Ok(Some(format!("BTC confirmed ({confirmations}); RQT locked in {txid}")))
     }
 
+    /// Wait for the Lightning payment to be held; then lock the RQT, or cancel (the payment goes back).
+    fn step_ln(&mut self, k: usize, btc_tip: u32, rqt_tip: u64) -> Result<Option<String>, String> {
+        let s = self.swaps[k].clone();
+        let hash: [u8; 32] =
+            unhex(s["id"].as_str().unwrap_or("")).ok().and_then(|b| b.try_into().ok()).ok_or("bad id")?;
+        let lnd = self.cfg.lnd.as_ref().ok_or("no Lightning node")?;
+        let (state, paid, expiry) = lnd.invoice(&hash)?;
+        match state.as_str() {
+            "CANCELED" => {
+                self.set(k, json!({"state": "expired"}));
+                return Ok(Some("invoice expired unpaid".into()));
+            }
+            "ACCEPTED" => {}
+            _ => return Ok(None),
+        }
+        let need = s["btc_sats"].as_u64().unwrap_or(u64::MAX);
+        let cancel =
+            |why: &str| -> Result<(), String> { lnd.cancel(&hash).map_err(|e| format!("{why}; cancel failed: {e}")) };
+        if paid < need {
+            cancel("underpaid")?;
+            self.set(k, json!({"state": "underpaid"}));
+            return Ok(Some(format!("underpaid ({paid} of {need}); invoice cancelled, the payment goes back")));
+        }
+        if expiry.unwrap_or(0).saturating_sub(btc_tip as u64) < LN_MIN_BLOCKS_LEFT {
+            cancel("too little time")?;
+            self.set(k, json!({"state": "too_late"}));
+            return Ok(Some("the held payment expires too soon; invoice cancelled".into()));
+        }
+        let claim: Hash =
+            unhex(s["taker_claim"].as_str().unwrap_or("")).ok().and_then(|b| b.try_into().ok()).ok_or("bad claim")?;
+        let lock = RqtHtlc { hash, claim, refund: self.me(), timeout: rqt_tip + LN_RQT_TIMEOUT_BLOCKS };
+        match self.pay(Condition::Htlc(lock).owner(), s["rqt_atoms"].as_u64().unwrap_or(0)) {
+            Ok(txid) => {
+                self.set(
+                    k,
+                    json!({"state": "rqt_locked", "rqt_htlc": swap::rqt_htlc_json(&lock), "rqt_lock_txid": txid,
+                                   "ln_htlc_expiry": expiry}),
+                );
+                Ok(Some(format!("Lightning payment held; RQT locked in {txid}")))
+            }
+            Err(e) => {
+                cancel("lock failed")?;
+                self.set(k, json!({"state": "failed", "note": e.clone()}));
+                Ok(Some(format!("could not lock the RQT ({e}); invoice cancelled, the payment goes back")))
+            }
+        }
+    }
+
     /// Pay `atoms` to `owner` from the maker's key (change back to it); the txid.
     fn pay(&self, owner: Hash, atoms: u64) -> Result<String, String> {
         let me = self.me();
@@ -255,6 +338,11 @@ impl Maker {
             })
             .collect();
         if let Some(secret) = self.secret_on_requant(&owner, &lock, &s)? {
+            if s["kind"] == json!("ln") {
+                self.cfg.lnd.as_ref().ok_or("no Lightning node")?.settle(&secret)?;
+                self.set(k, json!({"state": "done", "secret": hex(&secret)}));
+                return Ok(Some("secret revealed on Requant; Lightning payment settled".into()));
+            }
             let h = swap::btc_htlc_from(&s["btc_htlc"])?;
             let f = &s["funding"];
             let op = bitcoin::OutPoint {
@@ -283,6 +371,11 @@ impl Maker {
                 contracts::spend(&Condition::Htlc(lock), "refund", &coins, &self.me(), RQT_FEE_RATE, None, false)?;
             tx.sign(&self.cfg.rqt_network.chain_id, &vec![&self.key; coins.len()]);
             let txid = self.send_rqt(&tx)?;
+            if s["kind"] == json!("ln") {
+                if let Some(lnd) = &self.cfg.lnd {
+                    lnd.cancel(&lock.hash)?;
+                }
+            }
             self.set(k, json!({"state": "rqt_refunded", "rqt_refund_txid": txid}));
             return Ok(Some(format!("the taker never claimed; RQT refunded in {txid}")));
         }

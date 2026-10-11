@@ -43,6 +43,9 @@
 //! Buying RQT with BTC from a maker (atomic swap, SWAPS.md §1; `swap.rs`). SWAP.json holds the secret
 //! and the Bitcoin refund key: keep it private until the swap is over.
 //! requant-wallet swap buy    MAKER_HOST:PORT AMOUNT WALLET|KEYFILE --out SWAP.json [--max-sats N]
+//! requant-wallet swap buy-ln MAKER_HOST:PORT AMOUNT WALLET|KEYFILE --out SWAP.json [--max-sats N]
+//!                            (pay over Lightning: an invoice to pay from any Lightning wallet; a payment
+//!                            the maker does not complete goes back by itself)
 //! requant-wallet swap status SWAP.json
 //! requant-wallet swap claim  SWAP.json WALLET|KEYFILE          (takes the RQT; reveals the secret)
 //! requant-wallet swap refund SWAP.json BTC_ADDRESS [--btc-fee-rate N] [--txid T --vout V --sats S]
@@ -66,7 +69,7 @@ use requant_wallet::backend::Backend;
 use requant_wallet::hd;
 use requant_wallet::wallet::{Unsigned, WalletFile};
 use requant_wallet::*;
-use requant_wallet::{btc, swap};
+use requant_wallet::{btc, ln, swap};
 use serde_json::json;
 use std::collections::HashMap;
 use std::net::ToSocketAddrs;
@@ -1053,6 +1056,51 @@ fn main() {
             println!("receive  {} RQT at {}", format_amount(atoms), address(&net, &claim));
             eprintln!("swap written to {file}; then `swap status {file}` and, once the RQT are locked, `swap claim {file} WALLET`. If the maker does not lock them, `swap refund {file} BTC_ADDRESS` from Bitcoin block {}", h.timeout);
         }
+        ["swap", "buy-ln", maker, amount, src] => {
+            let maker_at = maker.to_socket_addrs().ok().and_then(|mut a| a.next()).unwrap_or_else(|| die("MAKER: host:port"));
+            let Some(file) = &out else { die("swap buy-ln needs --out SWAP.json (it holds the secret: keep it private)") };
+            refuse_existing(file);
+            let atoms = parse_amount(amount).unwrap_or_else(|e| die(e));
+            let info = requant_node::rpc::request(maker_at, "info", json!([])).unwrap_or_else(|e| die(&format!("maker: {e}")));
+            if info["rqt_network"] != json!(net.name) {
+                die(&format!("the maker sells RQT of the {} network", info["rqt_network"]));
+            }
+            if info["lightning"] != json!(true) {
+                die("this maker takes no Lightning payments");
+            }
+            let btc_name = info["btc_network"].as_str().unwrap_or("").to_string();
+            let claim = match source(&net, src) {
+                Source::Key(path) => owner_of(&load_key(&path)),
+                Source::Wallet(_, w) => w.receive[w.receive_issued.max(1) as usize - 1],
+                Source::Address(o) => o,
+            };
+            let secret = Zeroizing::new(random::<32>());
+            let hash = swap::sha256(secret.as_ref());
+            let price = swap::price(atoms, info["sats_per_rqt"].as_u64().unwrap_or(0));
+            let offer = requant_node::rpc::request(maker_at, "swap_create_ln", json!([atoms, hex(&hash), address(&net, &claim)]))
+                .unwrap_or_else(|e| die(&format!("maker: {e}")));
+            let bolt11 = offer["bolt11"].as_str().unwrap_or_else(|| die("the maker sent no invoice")).to_string();
+            // the invoice must be locked by this swap's own hash, on the maker's network, for the price
+            let inv = ln::decode_invoice(&bolt11).unwrap_or_else(|e| die(&format!("the maker's invoice: {e}")));
+            if inv.payment_hash != hash {
+                die("the maker's invoice is not locked by this swap's secret: do not pay it");
+            }
+            if inv.prefix != ln::prefix_of(&btc_name) {
+                die(&format!("the maker's invoice is for another network ({})", inv.prefix));
+            }
+            let sats = offer["btc_sats"].as_u64().unwrap_or(0);
+            if inv.msat != Some(sats * 1000) || sats > max_sats.unwrap_or(price) {
+                die("the maker's invoice asks another amount than its price");
+            }
+            let record = json!({"requant_swap": 1, "kind": "ln", "network": net.name, "btc_network": btc_name, "maker": maker,
+                                "id": offer["id"], "rqt_atoms": atoms, "btc_sats": sats, "claim": hex(&claim),
+                                "secret": hex(secret.as_ref()), "bolt11": bolt11});
+            write_file(file, &serde_json::to_string_pretty(&record).unwrap());
+            println!("pay      {sats} satoshis over Lightning, within {} minutes:", inv.expiry / 60);
+            println!("invoice  {bolt11}");
+            println!("receive  {} RQT at {}", format_amount(atoms), address(&net, &claim));
+            eprintln!("swap written to {file}; once the maker has locked the RQT (`swap status {file}`), `swap claim {file} WALLET`. A payment the maker does not complete goes back to your Lightning wallet by itself.");
+        }
         ["swap", cmd @ ("status" | "claim" | "refund"), file, rest @ ..] => {
             let v: serde_json::Value = serde_json::from_str(&read(file)).unwrap_or_else(|e| die(&format!("{file}: {e}")));
             if v["requant_swap"] != json!(1) || v["network"] != json!(net.name) {
@@ -1060,9 +1108,19 @@ fn main() {
             }
             let maker_at = v["maker"].as_str().and_then(|m| m.to_socket_addrs().ok()).and_then(|mut a| a.next()).unwrap_or_else(|| die("bad maker"));
             let btc_net = btc::network(v["btc_network"].as_str().unwrap_or("")).unwrap_or_else(|e| die(&e));
-            let h = swap::btc_htlc_from(&v["btc_htlc"]).unwrap_or_else(|e| die(&e));
+            let lightning = v["kind"] == json!("ln");
             let secret: [u8; 32] = unhex(v["secret"].as_str().unwrap_or("")).ok().and_then(|b| b.try_into().ok()).unwrap_or_else(|| die("bad secret"));
-            if swap::sha256(&secret) != h.hash {
+            let hash = swap::sha256(&secret);
+            if lightning && *cmd == "refund" {
+                die("a Lightning payment the maker does not complete goes back to your Lightning wallet by itself");
+            }
+            // on-chain swaps carry their Bitcoin HTLC; Lightning ones only the hash
+            let h = if lightning {
+                btc::Htlc { hash, claim: btc::public_key(&[1; 32]).unwrap(), refund: btc::public_key(&[1; 32]).unwrap(), timeout: 0 }
+            } else {
+                swap::btc_htlc_from(&v["btc_htlc"]).unwrap_or_else(|e| die(&e))
+            };
+            if hash != h.hash {
                 die(&format!("{file}: the secret does not match the HTLC"));
             }
             let claim: Hash = unhex(v["claim"].as_str().unwrap_or("")).ok().and_then(|b| b.try_into().ok()).unwrap_or_else(|| die("bad claim"));
@@ -1074,9 +1132,14 @@ fn main() {
                         let lock = swap::rqt_htlc_from(&st["rqt_htlc"]).unwrap_or_else(|e| die(&e));
                         swap::check_lock(&lock, &h.hash, &claim).unwrap_or_else(|e| die(&e));
                     }
-                    println!("{}", json!({"state": st["state"], "btc_address": h.address(btc_net).to_string(), "btc_sats": v["btc_sats"],
-                                          "funding": st["funding"], "rqt_lock_txid": st["rqt_lock_txid"], "rqt_htlc": st["rqt_htlc"],
-                                          "btc_refund_from": h.timeout}));
+                    if lightning {
+                        println!("{}", json!({"state": st["state"], "kind": "ln", "bolt11": v["bolt11"], "btc_sats": v["btc_sats"],
+                                              "rqt_lock_txid": st["rqt_lock_txid"], "rqt_htlc": st["rqt_htlc"]}));
+                    } else {
+                        println!("{}", json!({"state": st["state"], "btc_address": h.address(btc_net).to_string(), "btc_sats": v["btc_sats"],
+                                              "funding": st["funding"], "rqt_lock_txid": st["rqt_lock_txid"], "rqt_htlc": st["rqt_htlc"],
+                                              "btc_refund_from": h.timeout}));
+                    }
                 }
                 ("claim", [src]) => {
                     let st = status.unwrap_or_else(|e| die(&format!("maker: {e}")));
@@ -1324,7 +1387,8 @@ fn main() {
             "       | channel open SRC SERVER_PUBKEY SERVER_ADDRESS AMOUNT EXPIRY --out CH | channel accept SRC CH\n",
             "       | channel fund SRC CH | channel pay SRC CH TOTAL --out STATE | channel receive CH STATE\n",
             "       | channel close SRC CH STATE | channel refund CH | channel show CH\n",
-            "       | swap buy MAKER AMOUNT SRC --out SWAP | swap status SWAP | swap claim SWAP SRC | swap refund SWAP BTC_ADDRESS\n",
+            "       | swap buy MAKER AMOUNT SRC --out SWAP | swap buy-ln MAKER AMOUNT SRC --out SWAP | swap status SWAP\n",
+            "       | swap claim SWAP SRC | swap refund SWAP BTC_ADDRESS\n",
             "options: --network test|regtest (default test, or the wallet's) --rpc HOST:PORT\n",
             "         --fee-rate ATOMS_PER_BYTE|fast|normal|slow (default normal: the node's estimate) --yes --out FILE"
         )),
