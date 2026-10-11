@@ -1,0 +1,10 @@
+[profile.default]
+src = "src"
+test = "test"
+out = "out"
+cache_path = "cache"
+solc_version = "0.8.20"
+# TVM (TRON) follows the EVM up to Istanbul; newer opcodes such as PUSH0 are not assumed.
+evm_version = "istanbul"
+optimizer = true
+optimizer_runs = 200
