@@ -2,6 +2,7 @@
 //! the node's UTXO listing; wallets of many addresses from one backup phrase (`hd`, `wallet`).
 
 pub mod backend;
+pub mod btc;
 pub mod channel;
 pub mod contracts;
 pub mod hd;
