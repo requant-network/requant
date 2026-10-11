@@ -46,10 +46,16 @@
 //! requant-wallet swap buy-ln MAKER_HOST:PORT AMOUNT WALLET|KEYFILE --out SWAP.json [--max-sats N]
 //!                            (pay over Lightning: an invoice to pay from any Lightning wallet; a payment
 //!                            the maker does not complete goes back by itself)
+//! requant-wallet swap buy-usdt MAKER_HOST:PORT AMOUNT WALLET|KEYFILE --out SWAP.json [--max-usdt N]
+//!                            (pay with USDT on TRON: send it, and some TRX for fees, to the swap's own
+//!                            TRON address, from anywhere; then `swap lock`)
+//! requant-wallet swap lock   SWAP.json                         (USDT: locks it in the RequantHtlc contract)
 //! requant-wallet swap status SWAP.json
 //! requant-wallet swap claim  SWAP.json WALLET|KEYFILE          (takes the RQT; reveals the secret)
 //! requant-wallet swap refund SWAP.json BTC_ADDRESS [--btc-fee-rate N] [--txid T --vout V --sats S]
 //!                            (the signed Bitcoin refund, valid from the HTLC's timeout, in hex)
+//! requant-wallet swap refund SWAP.json                        (USDT, from the timeout: back to the swap's address)
+//! requant-wallet swap withdraw SWAP.json TRON_ADDRESS          (USDT: moves it out of the swap's address)
 //!
 //! Either: balance, history [N], coins of an ADDRESS, KEYFILE or WALLET; tx TXID;
 //! send WALLET|KEYFILE ADDRESS AMOUNT|all [ADDRESS AMOUNT]...; consolidate WALLET|KEYFILE.
@@ -57,7 +63,7 @@
 //! Options: --network test|regtest (default test, or the wallet's), --rpc HOST:PORT, --fee-rate
 //! ATOMS_PER_BYTE|fast|normal|slow (default normal: the node's `estimatefee` for 3 blocks), --api
 //! http://HOST:PORT (a node's public API instead of RPC: no node of one's own needed), --yes (send
-//! without asking), --out FILE, --rpc-cookie FILE (the node's `.cookie`, when it runs with `--rpc-cookie`).
+//! without asking), --out FILE, --tron-api URL (a TRON node's HTTP API for USDT swaps), --rpc-cookie FILE (the node's `.cookie`, when it runs with `--rpc-cookie`).
 //! Environment (for scripts): REQUANT_WALLET_PASSPHRASE, REQUANT_WALLET_PHRASE (for restore),
 //! REQUANT_RPC_TOKEN, REQUANT_RPC_COOKIE.
 
@@ -69,7 +75,7 @@ use requant_wallet::backend::Backend;
 use requant_wallet::hd;
 use requant_wallet::wallet::{Unsigned, WalletFile};
 use requant_wallet::*;
-use requant_wallet::{btc, ln, swap};
+use requant_wallet::{btc, ln, swap, tron};
 use serde_json::json;
 use std::collections::HashMap;
 use std::net::ToSocketAddrs;
@@ -401,6 +407,31 @@ fn print_history(rpc: &Backend, owners: &[Hash], limit: u64) {
     }
 }
 
+/// A decimal with up to six places (USDT) in millionths.
+fn parse_units(s: &str) -> Result<u64, String> {
+    let (whole, frac) = s.split_once('.').unwrap_or((s, ""));
+    if frac.len() > 6
+        || whole.is_empty() && frac.is_empty()
+        || !(whole.chars().chain(frac.chars())).all(|c| c.is_ascii_digit())
+    {
+        return Err(format!("{s}: a number with up to six decimal places"));
+    }
+    let w: u64 = if whole.is_empty() { 0 } else { whole.parse().map_err(|_| format!("{s}: too large"))? };
+    let f: u64 = format!("{frac:0<6}").parse().unwrap_or(0);
+    w.checked_mul(1_000_000).and_then(|w| w.checked_add(f)).ok_or(format!("{s}: too large"))
+}
+
+/// Wait (up to five minutes) for a TRON transaction to be irreversible.
+fn tron_wait(api: &tron::Tron, txid: &str) -> tron::Outcome {
+    for _ in 0..60 {
+        if let Ok(Some(o)) = api.outcome(txid) {
+            return o;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(5));
+    }
+    die(&format!("{txid} is not irreversible after five minutes; check it later with `swap status`"))
+}
+
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let mut flag = |name: &str| args.iter().position(|a| a == name).map(|k| args.remove(k)).is_some();
@@ -422,6 +453,8 @@ fn main() {
     let max_sats = opt("--max-sats").map(|n| n.parse::<u64>().unwrap_or_else(|_| die("--max-sats: satoshis")));
     let btc_fee_rate =
         opt("--btc-fee-rate").map(|n| n.parse::<u64>().unwrap_or_else(|_| die("--btc-fee-rate: sat/vB"))).unwrap_or(2);
+    let max_usdt = opt("--max-usdt").map(|n| parse_units(&n).unwrap_or_else(|e| die(&format!("--max-usdt: {e}"))));
+    let tron_api = opt("--tron-api");
     let txid_opt = opt("--txid");
     let vout_opt = opt("--vout").map(|n| n.parse::<u32>().unwrap_or_else(|_| die("--vout: a number")));
     let sats_opt = opt("--sats").map(|n| n.parse::<u64>().unwrap_or_else(|_| die("--sats: a number")));
@@ -1101,21 +1134,81 @@ fn main() {
             println!("receive  {} RQT at {}", format_amount(atoms), address(&net, &claim));
             eprintln!("swap written to {file}; once the maker has locked the RQT (`swap status {file}`), `swap claim {file} WALLET`. A payment the maker does not complete goes back to your Lightning wallet by itself.");
         }
-        ["swap", cmd @ ("status" | "claim" | "refund"), file, rest @ ..] => {
+        ["swap", "buy-usdt", maker, amount, src] => {
+            let maker_at = maker.to_socket_addrs().ok().and_then(|mut a| a.next()).unwrap_or_else(|| die("MAKER: host:port"));
+            let Some(file) = &out else { die("swap buy-usdt needs --out SWAP.json (it holds the secret and a TRON key: keep it private)") };
+            refuse_existing(file);
+            let atoms = parse_amount(amount).unwrap_or_else(|e| die(e));
+            let info = requant_node::rpc::request(maker_at, "info", json!([])).unwrap_or_else(|e| die(&format!("maker: {e}")));
+            if info["rqt_network"] != json!(net.name) {
+                die(&format!("the maker sells RQT of the {} network", info["rqt_network"]));
+            }
+            let u = &info["usdt"];
+            if u.is_null() {
+                die("this maker takes no USDT");
+            }
+            let tron_net = u["network"].as_str().unwrap_or("").to_string();
+            let d = tron::deployment(&tron_net).unwrap_or_else(|e| die(&e));
+            let claim = match source(&net, src) {
+                Source::Key(path) => owner_of(&load_key(&path)),
+                Source::Wallet(_, w) => w.receive[w.receive_issued.max(1) as usize - 1],
+                Source::Address(o) => o,
+            };
+            let secret = Zeroizing::new(random::<32>());
+            let hash = swap::sha256(secret.as_ref());
+            let tron_key = Zeroizing::new(random::<32>());
+            let sender = tron::address_of(&tron_key).unwrap_or_else(|e| die(&e));
+            let price = swap::price(atoms, u["units_per_rqt"].as_u64().unwrap_or(0));
+            let api = tron::Tron::new(tron_api.as_deref().unwrap_or(d.api));
+            let now = api.now().unwrap_or_else(|e| die(&e));
+            let offer = requant_node::rpc::request(maker_at, "swap_create_usdt", json!([atoms, hex(&hash), tron::to_base58(&sender), address(&net, &claim)]))
+                .unwrap_or_else(|e| die(&format!("maker: {e}")));
+            let terms = swap::check_token_offer(&offer, &tron_net, &hash, &sender, max_usdt.unwrap_or(price), now).unwrap_or_else(|e| die(&e));
+            let deadline = offer["funding_deadline"].as_u64().unwrap_or(0);
+            let record = json!({"requant_swap": 1, "kind": "usdt", "network": net.name, "tron_network": tron_net, "maker": maker,
+                                "id": offer["id"], "rqt_atoms": atoms, "units": terms.amount, "claim": hex(&claim),
+                                "secret": hex(secret.as_ref()), "tron_key": hex(tron_key.as_ref()), "htlc": d.htlc,
+                                "terms": terms.json(), "funding_deadline": deadline});
+            write_file(file, &serde_json::to_string_pretty(&record).unwrap());
+            println!("send     {} USDT (TRC-20, TRON {tron_net}) to {}", tron::format_units(terms.amount), tron::to_base58(&sender));
+            println!("and      about 10 TRX to the same address for the fees (the lock spends energy)");
+            println!("lock     within {} minutes: `swap lock {file}`", deadline.saturating_sub(now) / 60);
+            println!("receive  {} RQT at {}", format_amount(atoms), address(&net, &claim));
+            eprintln!("swap written to {file}: it holds the secret and the key of that TRON address. Once the RQT are locked (`swap status {file}`), `swap claim {file} WALLET`. If the maker does not lock them, `swap refund {file}` from unix time {} and `swap withdraw {file} TRON_ADDRESS`.", terms.timeout);
+        }
+        ["swap", cmd @ ("status" | "claim" | "refund" | "lock" | "withdraw"), file, rest @ ..] => {
             let v: serde_json::Value = serde_json::from_str(&read(file)).unwrap_or_else(|e| die(&format!("{file}: {e}")));
             if v["requant_swap"] != json!(1) || v["network"] != json!(net.name) {
                 die(&format!("{file}: not a swap of this network"));
             }
             let maker_at = v["maker"].as_str().and_then(|m| m.to_socket_addrs().ok()).and_then(|mut a| a.next()).unwrap_or_else(|| die("bad maker"));
-            let btc_net = btc::network(v["btc_network"].as_str().unwrap_or("")).unwrap_or_else(|e| die(&e));
             let lightning = v["kind"] == json!("ln");
+            let token = v["kind"] == json!("usdt");
             let secret: [u8; 32] = unhex(v["secret"].as_str().unwrap_or("")).ok().and_then(|b| b.try_into().ok()).unwrap_or_else(|| die("bad secret"));
             let hash = swap::sha256(&secret);
             if lightning && *cmd == "refund" {
                 die("a Lightning payment the maker does not complete goes back to your Lightning wallet by itself");
             }
-            // on-chain swaps carry their Bitcoin HTLC; Lightning ones only the hash
-            let h = if lightning {
+            if !token && matches!(*cmd, "lock" | "withdraw") {
+                die("swap lock and swap withdraw are for USDT swaps");
+            }
+            // USDT swaps: the swap's own TRON key locks, refunds and withdraws
+            let tron_side = token.then(|| {
+                let tron_net = v["tron_network"].as_str().unwrap_or("");
+                let d = tron::deployment(tron_net).unwrap_or_else(|e| die(&e));
+                if v["htlc"].as_str() != Some(d.htlc) {
+                    die(&format!("{file}: not the RequantHtlc contract of {tron_net}"));
+                }
+                let terms = tron::Terms::from_json(&v["terms"]).unwrap_or_else(|e| die(&e));
+                let key: [u8; 32] = unhex(v["tron_key"].as_str().unwrap_or("")).ok().and_then(|b| b.try_into().ok()).unwrap_or_else(|| die("bad TRON key"));
+                if terms.hash != hash || tron::address_of(&key).ok() != Some(terms.sender) {
+                    die(&format!("{file}: the secret or the TRON key does not match the terms"));
+                }
+                (tron::Tron::new(tron_api.as_deref().unwrap_or(d.api)), tron::parse(d.htlc).unwrap(), terms, Zeroizing::new(key))
+            });
+            let btc_net = if token { bitcoin::Network::Bitcoin } else { btc::network(v["btc_network"].as_str().unwrap_or("")).unwrap_or_else(|e| die(&e)) };
+            // on-chain swaps carry their Bitcoin HTLC; Lightning and USDT ones only the hash
+            let h = if lightning || token {
                 btc::Htlc { hash, claim: btc::public_key(&[1; 32]).unwrap(), refund: btc::public_key(&[1; 32]).unwrap(), timeout: 0 }
             } else {
                 swap::btc_htlc_from(&v["btc_htlc"]).unwrap_or_else(|e| die(&e))
@@ -1132,7 +1225,16 @@ fn main() {
                         let lock = swap::rqt_htlc_from(&st["rqt_htlc"]).unwrap_or_else(|e| die(&e));
                         swap::check_lock(&lock, &h.hash, &claim).unwrap_or_else(|e| die(&e));
                     }
-                    if lightning {
+                    if let Some((api, htlc, terms, _)) = &tron_side {
+                        let me = terms.sender;
+                        println!("{}", json!({"state": st["state"], "kind": "usdt", "tron_address": tron::to_base58(&me),
+                                              "usdt_to_lock": tron::format_units(terms.amount),
+                                              "usdt_held": api.token_balance(&terms.token, &me).ok().map(tron::format_units),
+                                              "trx_held": api.trx_balance(&me).ok().map(|s| s as f64 / 1e6),
+                                              "lock": api.lock_state(htlc, terms, false).ok().map(|s| s.name()),
+                                              "lock_before": v["funding_deadline"], "refund_from": terms.timeout,
+                                              "rqt_lock_txid": st["rqt_lock_txid"], "rqt_htlc": st["rqt_htlc"]}));
+                    } else if lightning {
                         println!("{}", json!({"state": st["state"], "kind": "ln", "bolt11": v["bolt11"], "btc_sats": v["btc_sats"],
                                               "rqt_lock_txid": st["rqt_lock_txid"], "rqt_htlc": st["rqt_htlc"]}));
                     } else {
@@ -1157,6 +1259,69 @@ fn main() {
                     eprintln!("  claim {} RQT (fee {} RQT); this reveals the secret to the maker", format_amount(tx.outputs()[0].value), format_amount(fee));
                     println!("sent, txid {}", send(&rpc(), &tx));
                 }
+                ("lock", []) => {
+                    let (api, htlc, terms, key) = tron_side.as_ref().unwrap();
+                    let me = terms.sender;
+                    let now = api.now().unwrap_or_else(|e| die(&e));
+                    if now > v["funding_deadline"].as_u64().unwrap_or(0) {
+                        die("the time to lock has passed: the maker would not lock the RQT; do not lock now");
+                    }
+                    match api.lock_state(htlc, terms, false).unwrap_or_else(|e| die(&e)) {
+                        tron::LockState::None => {}
+                        s => die(&format!("the USDT lock is {} already", s.name())),
+                    }
+                    let held = api.token_balance(&terms.token, &me).unwrap_or_else(|e| die(&e));
+                    if held < terms.amount {
+                        die(&format!("send {} USDT to {} first (it holds {})", tron::format_units(terms.amount), tron::to_base58(&me), tron::format_units(held)));
+                    }
+                    if !api.allowance(&terms.token, &me, htlc).unwrap_or_else(|e| die(&e)) {
+                        let (txid, _) = api.send_call(key, &terms.token, &tron::approve_max_call(htlc), 30_000_000).unwrap_or_else(|e| die(&e));
+                        eprintln!("  approve {txid}: waiting for it to be irreversible (about a minute)");
+                        let o = tron_wait(api, &txid);
+                        if !o.ok {
+                            die(&format!("the approval failed ({txid}); the address may need more TRX for energy"));
+                        }
+                    }
+                    let (txid, _) = api.send_call(key, htlc, &terms.lock_call(), 60_000_000).unwrap_or_else(|e| die(&e));
+                    eprintln!("  lock {txid}: waiting for it to be irreversible (about a minute)");
+                    let o = tron_wait(api, &txid);
+                    if !o.ok {
+                        die(&format!("the lock failed ({txid}); the address may need more TRX for energy"));
+                    }
+                    println!("locked {} USDT in {txid} (energy {}, {} TRX burned)", tron::format_units(terms.amount), o.energy, o.fee_sun as f64 / 1e6);
+                    eprintln!("the maker locks the RQT next: `swap status {file}`, then `swap claim {file} WALLET`");
+                }
+                ("refund", []) if token => {
+                    let (api, htlc, terms, key) = tron_side.as_ref().unwrap();
+                    let now = api.now().unwrap_or_else(|e| die(&e));
+                    if now < terms.timeout {
+                        die(&format!("the USDT can be refunded from unix time {} ({} minutes from now)", terms.timeout, (terms.timeout - now).div_ceil(60)));
+                    }
+                    match api.lock_state(htlc, terms, false).unwrap_or_else(|e| die(&e)) {
+                        tron::LockState::Open => {}
+                        s => die(&format!("the USDT lock is {}: nothing to refund", s.name())),
+                    }
+                    let (txid, _) = api.send_call(key, htlc, &terms.refund_call(), 30_000_000).unwrap_or_else(|e| die(&e));
+                    eprintln!("  refund {txid}: waiting for it to be irreversible (about a minute)");
+                    if !tron_wait(api, &txid).ok {
+                        die(&format!("the refund failed ({txid}); the address may need more TRX for energy"));
+                    }
+                    println!("refunded {} USDT to {} in {txid}", tron::format_units(terms.amount), tron::to_base58(&terms.sender));
+                    eprintln!("move them out with `swap withdraw {file} TRON_ADDRESS`");
+                }
+                ("withdraw", [to]) => {
+                    let (api, _, terms, key) = tron_side.as_ref().unwrap();
+                    let to = tron::parse(to).unwrap_or_else(|e| die(&e));
+                    let held = api.token_balance(&terms.token, &terms.sender).unwrap_or_else(|e| die(&e));
+                    if held == 0 {
+                        die(&format!("{} holds no USDT", tron::to_base58(&terms.sender)));
+                    }
+                    let (txid, _) = api.send_call(key, &terms.token, &tron::transfer_call(&to, held), 30_000_000).unwrap_or_else(|e| die(&e));
+                    if !tron_wait(api, &txid).ok {
+                        die(&format!("the transfer failed ({txid}); the address may need more TRX for energy"));
+                    }
+                    println!("sent {} USDT to {} in {txid}", tron::format_units(held), tron::to_base58(&to));
+                }
                 ("refund", [to]) => {
                     let to: bitcoin::Address = to.parse::<bitcoin::Address<_>>().ok().and_then(|a| a.require_network(btc_net).ok())
                         .unwrap_or_else(|| die("BTC_ADDRESS: an address of the swap's Bitcoin network"));
@@ -1170,7 +1335,7 @@ fn main() {
                     eprintln!("  refund {} satoshis, valid from Bitcoin block {}; broadcast it with any Bitcoin node or explorer", tx.output[0].value.to_sat(), h.timeout);
                     println!("{}", bitcoin::consensus::encode::serialize_hex(&tx));
                 }
-                _ => die("usage: swap status SWAP.json | swap claim SWAP.json WALLET | swap refund SWAP.json BTC_ADDRESS"),
+                _ => die("usage: swap status SWAP.json | swap claim SWAP.json WALLET | swap refund SWAP.json BTC_ADDRESS\n       USDT: swap lock SWAP.json | swap refund SWAP.json | swap withdraw SWAP.json TRON_ADDRESS"),
             }
         }
         // ---- single keys ------------------------------------------------------------------------
@@ -1389,6 +1554,7 @@ fn main() {
             "       | channel close SRC CH STATE | channel refund CH | channel show CH\n",
             "       | swap buy MAKER AMOUNT SRC --out SWAP | swap buy-ln MAKER AMOUNT SRC --out SWAP | swap status SWAP\n",
             "       | swap claim SWAP SRC | swap refund SWAP BTC_ADDRESS\n",
+            "       | swap buy-usdt MAKER AMOUNT SRC --out SWAP | swap lock SWAP | swap refund SWAP | swap withdraw SWAP TRON_ADDRESS\n",
             "options: --network test|regtest (default test, or the wallet's) --rpc HOST:PORT\n",
             "         --fee-rate ATOMS_PER_BYTE|fast|normal|slow (default normal: the node's estimate) --yes --out FILE"
         )),

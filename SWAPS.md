@@ -1,18 +1,18 @@
 # Swaps and payment channels
 
-Status: **consensus primitives, pool policy, package relay, wallet commands and one-way payment
-channels in the wallet, RQT<->BTC swaps with a maker; no EVM, Monero or two-way channel software
-yet.** Since
+Status: **consensus primitives, pool policy, package relay, wallet commands, one-way payment
+channels, and buying RQT from a maker with BTC (on chain or over Lightning) or with USDT on TRON; no
+other chains, Monero or two-way channel software yet.** Since
 node 0.15.0 the chain has 2-of-2 conditions, hash/time-locked contracts (HTLCs) and absolute and
 relative time locks ([CHAIN.md §4.1](CHAIN.md)); since node 0.16.0 also revocable outputs, revocable
 HTLCs and anyone-can-pay signatures ([§4.2](CHAIN.md)), and a pool that ranks packages (child pays for
 parent) and replaces by fee ([§4.3](CHAIN.md)). On the test network they are active from heights 1400
 and 4700, on the main network from genesis. `requant-wallet` describes conditions, locks coins under
 them and spends them along each path (`condition`, `spend-condition`, `cosign`), and runs one-way
-payment channels (`channel`, wallet 0.7.0). The other protocols below are built in software on top of
-the same primitives, and **that software does not exist yet:** there is no swap tool, maker bot or
-two-way channel implementation. The point of having the primitives now is that adding these protocols
-later needs no hard fork.
+payment channels (`channel`, wallet 0.7.0) and swaps with a maker (`swap`, `requant-maker`). The other
+protocols below are built in software on top of the same primitives and **do not exist yet**: swaps
+with other chains and Monero, and two-way channels. The point of having the primitives now is that
+adding them later needs no hard fork.
 
 ## The primitives
 
@@ -70,7 +70,7 @@ needs a Bitcoin Core node and a Requant node API. `tests/test_swap_e2e.py` runs 
 (a completed swap, an underpaid and a late one refunded to the taker, one the taker never claims) with
 `BITCOIND=/path/to/bitcoind`.
 
-### Implemented: paying over Lightning (wallet 0.8.0)
+### Implemented: paying over Lightning (wallet 0.9.0)
 
 Lightning payments are locked by the SHA-256 of a 32-byte preimage, as Requant HTLCs are, so the same
 secret ties both sides and nothing waits for Bitcoin confirmations:
@@ -89,6 +89,34 @@ taker's Lightning wallet by itself: no refund to wait for. The maker needs LND w
 its own host and a macaroon that can add, settle and cancel invoices. `tests/test_swap_ln_e2e.py`
 runs it on regtest with two LND nodes (BITCOIND=... LND=...): a completed swap, a lock the maker
 cannot make, and an unclaimed swap.
+
+### Implemented: paying with USDT on TRON (wallet 0.10.0)
+
+The token side is the RequantHtlc contract ([contracts/](contracts/README.md)): a lock pays its receiver
+against the 32-byte SHA-256 preimage of its hash before its timeout (unix seconds), and goes back to its
+sender from then on. Locks are identified by a hash of all their terms, and only their state is stored
+(about 44,000 energy per lock on TRON). The wallet accepts only the deployments it knows
+(`tron::DEPLOYMENTS`; on the Nile testnet so far), so a maker cannot point a taker at a contract of its
+own.
+
+1. `requant-wallet swap buy-usdt MAKER AMOUNT WALLET --out SWAP.json`: the taker picks the secret and a
+   new TRON key for this swap; the maker answers with the lock's terms (its USDT, the maker as receiver,
+   the taker's hash, the price, a refund twelve hours on). The wallet checks every term. The taker sends
+   the USDT and some TRX for the fees to the swap's own TRON address, from any wallet or exchange.
+2. `swap lock SWAP.json` approves the contract (once) and locks the USDT from that address.
+3. Once the lock is irreversible (about a minute: TRON's solidified blocks) and was made within two
+   hours of the offer, `requant-maker` locks the RQT for 120 Requant blocks (about two hours), and only
+   while four hours are left to the taker's refund.
+4. `swap claim` takes the RQT and reveals the secret; the maker claims the USDT with it.
+
+If the maker never locks, the taker takes the USDT back with `swap refund SWAP.json` from the timeout,
+and `swap withdraw SWAP.json TRON_ADDRESS` moves it out of the swap's address. The wallet builds and
+signs TRON transactions itself (`tron.rs`); the TRON API (TronGrid by default, `--tron-api` for another)
+only reads the chain and relays them. On Nile (2026-10-11) a swap of 1 RQT took the lock (43,638
+energy), the RQT lock, the claim of the RQT and the maker's claim of the USDT (27,403 energy) in about
+four minutes. Configure the maker with `"tron": {"network", "key", "units_per_rqt"}`; its TRON address
+needs TRX (or energy) for its claims. Not yet: energy delegated by the maker, so that the taker needs
+no TRX.
 
 **Privacy: weak, and it should be said so.** The same `H` appears on both chains, and the amounts and
 timing match. Anyone watching both chains can link the two halves. The HTLC is also visible on RQT

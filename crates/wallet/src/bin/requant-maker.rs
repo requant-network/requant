@@ -2,6 +2,8 @@
 //!
 //! requant-maker btc-keygen FILE          a Bitcoin key for the maker's claims (hex, kept private)
 //! requant-maker btc-address FILE NETWORK the P2WPKH address of that key (a place for the BTC it claims)
+//! requant-maker tron-keygen FILE         a TRON key: it receives the USDT the maker claims
+//! requant-maker tron-address FILE        that key's TRON address (fund it with TRX for claim fees)
 //! requant-maker run CONFIG.json          serve takers and run the swaps
 //!
 //! CONFIG.json:
@@ -14,15 +16,20 @@
 //! Optional Lightning: "lnd": {"rest": "127.0.0.1:8080", "macaroon": "invoices.macaroon"} (LND with
 //! --no-rest-tls on the same host; a macaroon that may add, settle and cancel invoices).
 //!
+//! Optional USDT on TRON: "tron": {"network": "nile", "key": "maker.tron", "units_per_rqt": 100000,
+//! "api": "https://nile.trongrid.io"} (units: millionths of a USDT; api defaults to the network's).
+//!
 //! `rqt_key` is a requant-wallet key file (REQUANT_WALLET_PASSPHRASE when it is encrypted); it pays the
 //! RQT locks and receives refunds. `bitcoind_auth` holds `user:password` or is the node's `.cookie`.
 //! Takers call JSON-RPC `info`, `swap_create [rqt_atoms, hash, btc_refund_pubkey, rqt_address]` and
-//! `swap_status [id]`.
+//! `swap_status [id]`; `swap_create_ln [rqt_atoms, hash, rqt_address]` and
+//! `swap_create_usdt [rqt_atoms, hash, tron_sender, rqt_address]` when configured.
 
 use requant_consensus::params::Network;
 use requant_node::rpc::{hex, serve_with, Handler};
 use requant_wallet::btc::{self, Bitcoind};
-use requant_wallet::maker::{Config, Maker};
+use requant_wallet::maker::{Config, Maker, TronSide};
+use requant_wallet::tron::{self, Tron};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 
@@ -72,6 +79,20 @@ fn config(path: &str) -> (Config, String, u64) {
             let bytes = std::fs::read(mac).unwrap_or_else(|e| die(&format!("{mac}: {e}")));
             requant_wallet::ln::Lnd::new(rest, &bytes).unwrap_or_else(|e| die(&e))
         }),
+        tron: c["tron"].as_object().map(|t| {
+            let text = |k: &str| t.get(k).and_then(|v| v.as_str()).unwrap_or_else(|| die(&format!("tron.{k} missing")));
+            let network = text("network").to_string();
+            let d = tron::deployment(&network).unwrap_or_else(|e| die(&e));
+            TronSide {
+                api: Tron::new(t.get("api").and_then(|v| v.as_str()).unwrap_or(d.api)),
+                key: key32(text("key")),
+                units_per_rqt: t
+                    .get("units_per_rqt")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or_else(|| die("tron.units_per_rqt")),
+                network,
+            }
+        }),
         sats_per_rqt: n("sats_per_rqt"),
         min_rqt: n("min_rqt"),
         max_rqt: n("max_rqt"),
@@ -92,6 +113,20 @@ fn main() {
             let pubkey = btc::public_key(&secret).unwrap_or_else(|e| die(&e));
             std::fs::write(file, hex(&secret)).unwrap_or_else(|e| die(&e.to_string()));
             println!("Bitcoin key written to {file} (keep it private)\npubkey {pubkey}");
+        }
+        ["tron-keygen", file] => {
+            if std::path::Path::new(file).exists() {
+                die(&format!("{file} exists; refusing to overwrite it"));
+            }
+            let mut secret = [0u8; 32];
+            getrandom::getrandom(&mut secret).unwrap_or_else(|e| die(&e.to_string()));
+            let a = tron::address_of(&secret).unwrap_or_else(|e| die(&e));
+            std::fs::write(file, hex(&secret)).unwrap_or_else(|e| die(&e.to_string()));
+            println!("TRON key written to {file} (keep it private)
+address {}", tron::to_base58(&a));
+        }
+        ["tron-address", file] => {
+            println!("{}", tron::to_base58(&tron::address_of(&key32(file)).unwrap_or_else(|e| die(&e))));
         }
         ["btc-address", file, network] => {
             let net = btc::network(network).unwrap_or_else(|e| die(&e));
@@ -122,6 +157,13 @@ fn main() {
                         };
                         mk.create_ln(atoms, &text(1)?, &text(2)?)
                     }
+                    "swap_create_usdt" => {
+                        let atoms = arg(0)?.as_u64().ok_or("parameter 0: atoms")?;
+                        let text = |k: usize| {
+                            arg(k).and_then(|v| v.as_str().map(str::to_string).ok_or(format!("parameter {k}: text")))
+                        };
+                        mk.create_token(atoms, &text(1)?, &text(2)?, &text(3)?)
+                    }
                     "swap_status" => mk.status(arg(0)?.as_str().ok_or("parameter 0: id")?),
                     _ => Err(format!("unknown method {method}")),
                 }
@@ -137,6 +179,6 @@ fn main() {
                 std::thread::sleep(std::time::Duration::from_secs(tick));
             }
         }
-        _ => die("usage: requant-maker btc-keygen FILE | btc-address FILE NETWORK | run CONFIG.json"),
+        _ => die("usage: requant-maker btc-keygen FILE | btc-address FILE NETWORK | tron-keygen FILE | tron-address FILE | run CONFIG.json"),
     }
 }

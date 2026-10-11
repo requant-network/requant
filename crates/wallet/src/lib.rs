@@ -9,6 +9,7 @@ pub mod hd;
 pub mod ln;
 pub mod maker;
 pub mod swap;
+pub mod tron;
 pub mod wallet;
 
 use ed25519_dalek::SigningKey;

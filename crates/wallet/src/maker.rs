@@ -5,6 +5,9 @@
 //! with too little Bitcoin time left: the taker takes the BTC back), `underpaid`, or `rqt_refunded` (the
 //! taker never claimed the RQT).
 //!
+//! USDT swaps on TRON (`kind: "usdt"`) go `waiting_token` → `rqt_locked` → `token_claimed` → `done`, or end
+//! `expired`, `too_late` or `rqt_refunded` the same way.
+//!
 //! A tick, every few seconds, moves each swap on from what the two chains show. State is one JSON file,
 //! written to a temporary file and renamed, so a crash never loses a swap.
 
@@ -13,6 +16,7 @@ use crate::btc::{self, Bitcoind};
 use crate::contracts::{self, Condition};
 use crate::ln::Lnd;
 use crate::swap::{self, BTC_TIMEOUT_BLOCKS, MIN_BTC_BLOCKS_LEFT, RQT_TIMEOUT_BLOCKS};
+use crate::tron::{self, LockState, Terms, Tron};
 use crate::{owner_of, plan_payment, sign_with, Spendable};
 use ed25519_dalek::SigningKey;
 use requant_consensus::params::Network;
@@ -34,6 +38,19 @@ const _: () = assert!(LN_RQT_TIMEOUT_BLOCKS * 60 * 2 <= LN_MIN_BLOCKS_LEFT * 600
 
 /// The Requant fee rate of the maker's locks and refunds (atoms per byte).
 const RQT_FEE_RATE: u64 = 2;
+/// Most TRX (in sun) the maker burns on one claim when its energy is not enough.
+const TRON_CLAIM_FEE_LIMIT: u64 = 30_000_000;
+/// After the funding time, how long the maker still waits for a lock to become irreversible.
+const TOKEN_GRACE_SECS: u64 = 600;
+
+/// The maker's TRON side: it receives USDT at its key's address.
+pub struct TronSide {
+    pub network: String,
+    pub api: Tron,
+    pub key: [u8; 32],
+    /// USDT units (millionths) per RQT.
+    pub units_per_rqt: u64,
+}
 
 pub struct Config {
     pub rqt_network: Network,
@@ -45,6 +62,8 @@ pub struct Config {
     pub btc_payout: bitcoin::Address,
     /// The maker's Lightning node, for swaps paid over Lightning.
     pub lnd: Option<Lnd>,
+    /// USDT on TRON, for swaps paid with it.
+    pub tron: Option<TronSide>,
     pub sats_per_rqt: u64,
     pub min_rqt: u64,
     pub max_rqt: u64,
@@ -103,7 +122,47 @@ impl Maker {
                "btc_pubkey": self.btc_pubkey().to_string(), "rqt_refund": hex(&self.me()),
                "btc_timeout_blocks": BTC_TIMEOUT_BLOCKS, "rqt_timeout_blocks": RQT_TIMEOUT_BLOCKS,
                "funding_window_blocks": FUNDING_WINDOW, "lightning": self.cfg.lnd.is_some(),
-               "ln_rqt_timeout_blocks": LN_RQT_TIMEOUT_BLOCKS})
+               "ln_rqt_timeout_blocks": LN_RQT_TIMEOUT_BLOCKS, "usdt": self.tron_info()})
+    }
+
+    fn tron_info(&self) -> Value {
+        let Some(t) = &self.cfg.tron else { return Value::Null };
+        let Ok(d) = tron::deployment(&t.network) else { return Value::Null };
+        json!({"network": t.network, "htlc": d.htlc, "token": d.usdt, "units_per_rqt": t.units_per_rqt,
+               "receiver": tron::address_of(&t.key).map(|a| tron::to_base58(&a)).unwrap_or_default(),
+               "timeout_secs": swap::TOKEN_TIMEOUT_SECS, "funding_secs": swap::TOKEN_FUNDING_SECS,
+               "rqt_timeout_blocks": swap::TOKEN_RQT_TIMEOUT_BLOCKS})
+    }
+
+    /// A new swap paid with USDT on TRON: the terms of a RequantHtlc lock the taker makes from `sender`.
+    pub fn create_token(&mut self, rqt_atoms: u64, hash: &str, sender: &str, claim: &str) -> Result<Value, String> {
+        let t = self.cfg.tron.as_ref().ok_or("this maker takes no USDT")?;
+        if rqt_atoms < self.cfg.min_rqt || rqt_atoms > self.cfg.max_rqt {
+            return Err(format!("amount: from {} to {} atoms", self.cfg.min_rqt, self.cfg.max_rqt));
+        }
+        let hash: [u8; 32] = unhex(hash).ok().and_then(|b| b.try_into().ok()).ok_or("hash: 64 hex digits")?;
+        let sender = tron::parse(sender)?;
+        let claim = contracts::who(&self.cfg.rqt_network, claim)?;
+        let id = hex(&hash);
+        if self.swaps.iter().any(|s| s["id"] == json!(id)) {
+            return Err("a swap with this hash exists: use a new secret".into());
+        }
+        let d = tron::deployment(&t.network)?;
+        let now = t.api.now()?;
+        let terms = Terms {
+            token: tron::parse(d.usdt)?,
+            sender,
+            receiver: tron::address_of(&t.key)?,
+            amount: swap::price(rqt_atoms, t.units_per_rqt),
+            hash,
+            timeout: now + swap::TOKEN_TIMEOUT_SECS,
+        };
+        let s = json!({"id": id, "kind": "usdt", "state": "waiting_token", "created": now, "rqt_atoms": rqt_atoms,
+                       "units": terms.amount, "taker_claim": hex(&claim), "tron_network": t.network,
+                       "htlc": d.htlc, "terms": terms.json(), "funding_deadline": now + swap::TOKEN_FUNDING_SECS});
+        self.swaps.push(s.clone());
+        self.save()?;
+        Ok(s)
     }
 
     /// A new swap: the taker's amount, secret hash, Bitcoin refund key and Requant address (key hash).
@@ -164,20 +223,23 @@ impl Maker {
     /// Move every open swap on; returns what happened, for the log.
     pub fn tick(&mut self) -> Vec<String> {
         let mut log = Vec::new();
-        let (btc_tip, rqt_tip) = match (self.cfg.bitcoind.height(), self.rqt_height()) {
-            (Ok(b), Ok(r)) => (b, r),
-            (b, r) => {
-                log.push(format!("chains unreachable: {:?} {:?}", b.err(), r.err()));
+        let rqt_tip = match self.rqt_height() {
+            Ok(r) => r,
+            Err(e) => {
+                log.push(format!("Requant unreachable: {e}"));
                 return log;
             }
         };
+        let btc_tip = self.cfg.bitcoind.height();
         for k in 0..self.swaps.len() {
             let state = self.swaps[k]["state"].as_str().unwrap_or("").to_string();
             let step = match state.as_str() {
-                "waiting_btc" => self.step_funding(k, btc_tip, rqt_tip),
-                "waiting_ln" => self.step_ln(k, btc_tip, rqt_tip),
+                "waiting_btc" => btc_tip.clone().and_then(|b| self.step_funding(k, b, rqt_tip)),
+                "waiting_ln" => btc_tip.clone().and_then(|b| self.step_ln(k, b, rqt_tip)),
+                "waiting_token" => self.step_token(k, rqt_tip),
                 "rqt_locked" => self.step_locked(k, rqt_tip),
                 "btc_claimed" => self.step_claimed(k),
+                "token_claimed" => self.step_token_claimed(k),
                 _ => Ok(None),
             };
             match step {
@@ -293,6 +355,78 @@ impl Maker {
         }
     }
 
+    fn tron(&self) -> Result<&TronSide, String> {
+        self.cfg.tron.as_ref().ok_or("no TRON side configured".into())
+    }
+
+    /// Wait for the taker's USDT lock to be irreversible; then lock the RQT.
+    fn step_token(&mut self, k: usize, rqt_tip: u64) -> Result<Option<String>, String> {
+        let s = self.swaps[k].clone();
+        let t = self.tron()?;
+        let terms = Terms::from_json(&s["terms"])?;
+        let htlc = tron::parse(s["htlc"].as_str().unwrap_or(""))?;
+        let now = t.api.now()?;
+        let deadline = s["funding_deadline"].as_u64().unwrap_or(0) + TOKEN_GRACE_SECS;
+        match t.api.lock_state(&htlc, &terms, true)? {
+            LockState::None if now > deadline => {
+                self.set(k, json!({"state": "expired"}));
+                return Ok(Some("expired: no USDT lock".into()));
+            }
+            LockState::None => return Ok(None),
+            LockState::Open => {}
+            other => {
+                self.set(k, json!({"state": "failed", "note": format!("the lock is {} already", other.name())}));
+                return Ok(Some(format!("the USDT lock is {} before the RQT were locked", other.name())));
+            }
+        }
+        if now > deadline || terms.timeout.saturating_sub(now) < swap::TOKEN_MIN_SECS_LEFT {
+            self.set(k, json!({"state": "too_late"}));
+            return Ok(Some("locked too late: not locking RQT; the taker refunds the USDT after the timeout".into()));
+        }
+        let claim: Hash =
+            unhex(s["taker_claim"].as_str().unwrap_or("")).ok().and_then(|b| b.try_into().ok()).ok_or("bad claim")?;
+        let lock =
+            RqtHtlc { hash: terms.hash, claim, refund: self.me(), timeout: rqt_tip + swap::TOKEN_RQT_TIMEOUT_BLOCKS };
+        let txid = self.pay(Condition::Htlc(lock).owner(), s["rqt_atoms"].as_u64().unwrap_or(0))?;
+        self.set(k, json!({"state": "rqt_locked", "rqt_htlc": swap::rqt_htlc_json(&lock), "rqt_lock_txid": txid}));
+        Ok(Some(format!("USDT locked ({} USDT); RQT locked in {txid}", tron::format_units(terms.amount))))
+    }
+
+    /// Claim the USDT with the secret: a new claim transaction (energy burned up to the fee limit).
+    fn claim_token(&self, s: &Value, secret: &[u8; 32]) -> Result<(String, Vec<u8>), String> {
+        let t = self.tron()?;
+        let terms = Terms::from_json(&s["terms"])?;
+        let htlc = tron::parse(s["htlc"].as_str().unwrap_or(""))?;
+        t.api.send_call(&t.key, &htlc, &terms.claim_call(secret), TRON_CLAIM_FEE_LIMIT)
+    }
+
+    /// The USDT claim is out: done once it is irreversible; otherwise relay it again, or send a new one
+    /// when it failed or expired while the lock is still open.
+    fn step_token_claimed(&mut self, k: usize) -> Result<Option<String>, String> {
+        let s = self.swaps[k].clone();
+        let t = self.tron()?;
+        let txid = s["token_claim_txid"].as_str().unwrap_or("").to_string();
+        if let Some(o) = t.api.outcome(&txid)? {
+            if o.ok {
+                self.set(k, json!({"state": "done", "token_claim_energy": o.energy, "token_claim_fee_sun": o.fee_sun}));
+                return Ok(Some(format!("USDT claim irreversible (energy {}, {} sun burned)", o.energy, o.fee_sun)));
+            }
+        } else if t.api.broadcast(&unhex(s["token_claim_hex"].as_str().unwrap_or("")).unwrap_or_default()).is_ok() {
+            return Ok(None);
+        }
+        let terms = Terms::from_json(&s["terms"])?;
+        let htlc = tron::parse(s["htlc"].as_str().unwrap_or(""))?;
+        if t.api.lock_state(&htlc, &terms, true)? == LockState::Claimed {
+            self.set(k, json!({"state": "done"}));
+            return Ok(Some("USDT claimed".into()));
+        }
+        let secret: [u8; 32] =
+            unhex(s["secret"].as_str().unwrap_or("")).ok().and_then(|b| b.try_into().ok()).ok_or("bad secret")?;
+        let (txid, signed) = self.claim_token(&s, &secret)?;
+        self.set(k, json!({"token_claim_txid": txid, "token_claim_hex": hex(&signed)}));
+        Ok(Some(format!("USDT claim sent again in {txid}")))
+    }
+
     /// Pay `atoms` to `owner` from the maker's key (change back to it); the txid.
     fn pay(&self, owner: Hash, atoms: u64) -> Result<String, String> {
         let me = self.me();
@@ -342,6 +476,15 @@ impl Maker {
                 self.cfg.lnd.as_ref().ok_or("no Lightning node")?.settle(&secret)?;
                 self.set(k, json!({"state": "done", "secret": hex(&secret)}));
                 return Ok(Some("secret revealed on Requant; Lightning payment settled".into()));
+            }
+            if s["kind"] == json!("usdt") {
+                let (txid, signed) = self.claim_token(&s, &secret)?;
+                self.set(
+                    k,
+                    json!({"state": "token_claimed", "secret": hex(&secret), "token_claim_txid": txid,
+                           "token_claim_hex": hex(&signed)}),
+                );
+                return Ok(Some(format!("secret revealed on Requant; USDT claimed in {txid}")));
             }
             let h = swap::btc_htlc_from(&s["btc_htlc"])?;
             let f = &s["funding"];

@@ -85,7 +85,10 @@ test network.
       `requant-maker`; a payment the maker does not complete goes back by itself; tested on regtest.
 - [x] The maker on the test networks (Requant testnet + Bitcoin signet, LND); a Buy RQT screen in the apps
       (MagnetGate Windows 0.3.8, Android build 281); swaps on chain and over Lightning done live.
-- [ ] Litecoin, Bitcoin Cash and Dogecoin on the same HTLC; EVM, TRON and TON contracts (USDT on TRON next).
+- [x] USDT on TRON (wallet 0.10.0): the RequantHtlc contract (`contracts/`, Foundry tests), `swap buy-usdt/lock/
+      refund/withdraw`, TRON in `requant-maker`; a swap done end to end on the Nile testnet.
+- [ ] Energy delegated by the maker, so a taker needs no TRX; the maker on future with USDT; the app button.
+- [ ] Litecoin, Bitcoin Cash and Dogecoin on the same HTLC; RequantHtlc on EVM chains; TON.
 - [ ] RQT↔XMR swaps: ed25519 adaptor signatures, MuSig2 key aggregation, cancel/refund/punish
       transfers; external cryptographic review before real value.
 - [ ] Confirmation-depth policy for swaps, scaled to amount and hashrate.

@@ -1,4 +1,5 @@
-//! RQT<->BTC atomic swaps (SWAPS.md §1): a taker buys RQT with BTC from a maker.
+//! RQT<->BTC atomic swaps (SWAPS.md §1): a taker buys RQT with BTC from a maker. USDT on TRON follows the
+//! same steps with the RequantHtlc contract in place of the Bitcoin script (`check_token_offer`).
 //!
 //! 1. The taker picks a 32-byte secret and asks the maker for a swap (`swap_create`): the amount of RQT,
 //!    the secret's SHA-256, the taker's Bitcoin refund key and the Requant address to receive at.
@@ -34,6 +35,16 @@ pub const MIN_BTC_BLOCKS_LEFT: u32 = 72;
 // the Requant lock (360 min) fits twice into what the maker requires to be left on Bitcoin (72 x 10 min)
 const _: () = assert!(RQT_TIMEOUT_BLOCKS * 60 * 2 <= MIN_BTC_BLOCKS_LEFT as u64 * 600);
 const _: () = assert!(MIN_BTC_BLOCKS_LEFT < BTC_TIMEOUT_BLOCKS);
+
+/// USDT swaps on TRON (RequantHtlc, `tron.rs`): the taker's lock runs twelve hours; the maker locks RQT
+/// for 120 Requant blocks (about two hours), only for a lock it sees irreversible within two hours of the
+/// offer, and only while four hours (twice the Requant lock) are left to the taker's refund.
+pub const TOKEN_TIMEOUT_SECS: u64 = 12 * 3600;
+pub const TOKEN_RQT_TIMEOUT_BLOCKS: u64 = 120;
+pub const TOKEN_FUNDING_SECS: u64 = 2 * 3600;
+pub const TOKEN_MIN_SECS_LEFT: u64 = 4 * 3600;
+const _: () = assert!(TOKEN_RQT_TIMEOUT_BLOCKS * 60 * 2 <= TOKEN_MIN_SECS_LEFT);
+const _: () = assert!(TOKEN_FUNDING_SECS + TOKEN_MIN_SECS_LEFT < TOKEN_TIMEOUT_SECS);
 
 /// Bitcoin confirmations the maker waits for before it locks RQT, by the swap's size in satoshis.
 pub fn btc_confirmations(sats: u64) -> u32 {
@@ -127,6 +138,37 @@ pub fn check_offer(
     Ok(h)
 }
 
+/// What the taker checks in a USDT offer before locking anything: the lock is in the wallet's own
+/// RequantHtlc deployment for that network, of its USDT, from the taker's address, under the taker's hash,
+/// for at most the price asked, with a refund no later than a little over twelve hours from `now`.
+pub fn check_token_offer(
+    offer: &Value,
+    network: &str,
+    hash: &[u8; 32],
+    sender: &crate::tron::Addr,
+    max_units: u64,
+    now: u64,
+) -> Result<crate::tron::Terms, String> {
+    let d = crate::tron::deployment(network)?;
+    if offer["htlc"].as_str() != Some(d.htlc) {
+        return Err(format!("the maker names a contract other than RequantHtlc on {network}: do not lock"));
+    }
+    let t = crate::tron::Terms::from_json(&offer["terms"])?;
+    if t.token != crate::tron::parse(d.usdt)? {
+        return Err("the maker asks for a token other than USDT".into());
+    }
+    if t.hash != *hash || t.sender != *sender {
+        return Err("the maker's terms are not for this swap's secret and address".into());
+    }
+    if t.amount == 0 || t.amount > max_units {
+        return Err(format!("the maker asks {} USDT, more than the {} allowed", t.amount, max_units));
+    }
+    if t.timeout > now + TOKEN_TIMEOUT_SECS + 3600 || t.timeout < now + TOKEN_MIN_SECS_LEFT + TOKEN_FUNDING_SECS {
+        return Err("the maker's refund time is out of range".into());
+    }
+    Ok(t)
+}
+
 /// What the taker checks before claiming: the Requant HTLC pays the taker with the swap's hash.
 pub fn check_lock(lock: &RqtHtlc, hash: &[u8; 32], claim: &[u8; 32]) -> Result<(), String> {
     if lock.hash != *hash || lock.claim != *claim {
@@ -170,5 +212,40 @@ mod tests {
         assert!(check_lock(&lock, &hash, &[1; 32]).is_ok());
         assert!(check_lock(&lock, &hash, &[2; 32]).is_err());
         assert_eq!(rqt_htlc_from(&rqt_htlc_json(&lock)), Ok(lock));
+    }
+
+    #[test]
+    fn the_taker_checks_a_usdt_offer() {
+        use crate::tron;
+        let d = tron::deployment("nile").unwrap();
+        let hash = sha256(&[9; 32]);
+        let me = tron::address_of(&[4; 32]).unwrap();
+        let now = 1_800_000_000;
+        let t = tron::Terms {
+            token: tron::parse(d.usdt).unwrap(),
+            sender: me,
+            receiver: tron::address_of(&[5; 32]).unwrap(),
+            amount: 2_000_000,
+            hash,
+            timeout: now + TOKEN_TIMEOUT_SECS,
+        };
+        let offer = json!({"htlc": d.htlc, "terms": t.json()});
+        assert_eq!(check_token_offer(&offer, "nile", &hash, &me, 2_000_000, now), Ok(t));
+        assert!(check_token_offer(&offer, "nile", &hash, &me, 1_999_999, now).is_err(), "more than asked");
+        assert!(check_token_offer(&offer, "mainnet", &hash, &me, 2_000_000, now).is_err(), "unknown network");
+        assert!(check_token_offer(&offer, "nile", &sha256(&[8; 32]), &me, 2_000_000, now).is_err(), "another secret");
+        let other = tron::address_of(&[6; 32]).unwrap();
+        assert!(check_token_offer(&offer, "nile", &hash, &other, 2_000_000, now).is_err(), "another sender");
+        let mut forged = offer.clone();
+        forged["htlc"] = json!(tron::to_base58(&other));
+        assert!(check_token_offer(&forged, "nile", &hash, &me, 2_000_000, now).is_err(), "another contract");
+        let mut forged = offer.clone();
+        forged["terms"] = tron::Terms { token: other, ..t }.json();
+        assert!(check_token_offer(&forged, "nile", &hash, &me, 2_000_000, now).is_err(), "another token");
+        let mut forged = offer.clone();
+        forged["terms"] = tron::Terms { timeout: now + 3600, ..t }.json();
+        assert!(check_token_offer(&forged, "nile", &hash, &me, 2_000_000, now).is_err(), "too short");
+        forged["terms"] = tron::Terms { timeout: now + 3 * TOKEN_TIMEOUT_SECS, ..t }.json();
+        assert!(check_token_offer(&forged, "nile", &hash, &me, 2_000_000, now).is_err(), "too long");
     }
 }
