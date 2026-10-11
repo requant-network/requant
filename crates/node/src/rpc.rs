@@ -669,14 +669,15 @@ fn client_token() -> Option<String> {
 }
 
 /// Minimal client for tests and tools: one request per connection; sends the token if one is configured
-/// (see `client_token`).
+/// (see `client_token`). The Host header names the server itself: some networks drop requests to a public
+/// address that name another host.
 pub fn request(addr: SocketAddr, method: &str, params: Value) -> io::Result<Value> {
     let body = json!({"method": method, "params": params}).to_string();
     let auth = client_token().map(|t| format!("Authorization: Bearer {t}\r\n")).unwrap_or_default();
     let mut s = TcpStream::connect(addr)?;
     write!(
         s,
-        "POST / HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n{auth}Content-Length: {}\r\n\r\n{body}",
+        "POST / HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\n{auth}Content-Length: {}\r\n\r\n{body}",
         body.len()
     )?;
     let mut resp = String::new();
