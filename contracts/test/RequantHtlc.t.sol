@@ -68,20 +68,23 @@ contract FeeToken is Token {
 
 /// Tries to refund a lock again from inside its own payout.
 contract ReentrantToken is Token {
-    RequantHtlc public htlc;
-    bytes32 public target;
+    RequantHtlc htlc;
+    address sender;
+    address receiver;
+    uint256 amount;
+    bytes32 hash;
+    uint64 timeout;
+    bool armed;
 
-    function arm(RequantHtlc h, bytes32 id) external {
-        htlc = h;
-        target = id;
+    function arm(RequantHtlc h, address s, address r, uint256 a, bytes32 x, uint64 t) external {
+        (htlc, sender, receiver, amount, hash, timeout, armed) = (h, s, r, a, x, t, true);
     }
 
-    function move(address from, address to, uint256 amount) internal override {
-        super.move(from, to, amount);
-        if (target != bytes32(0)) {
-            bytes32 id = target;
-            target = bytes32(0);
-            htlc.refund(id);
+    function move(address from, address to, uint256 value) internal override {
+        super.move(from, to, value);
+        if (armed) {
+            armed = false;
+            htlc.refund(address(this), sender, receiver, amount, hash, timeout);
         }
     }
 }
@@ -116,25 +119,29 @@ contract RequantHtlcTest {
         return htlc.lock(address(t), MAKER, AMOUNT, H, TIMEOUT);
     }
 
-    function state(bytes32 id) internal view returns (RequantHtlc.State s) {
-        (,,,,,, s) = htlc.locks(id);
+    function state(bytes32 id) internal view returns (RequantHtlc.State) {
+        return htlc.states(id);
+    }
+
+    function claim(Token t, bytes32 secret) internal {
+        htlc.claim(address(t), TAKER, MAKER, AMOUNT, H, TIMEOUT, secret);
+    }
+
+    function refund(Token t) internal {
+        htlc.refund(address(t), TAKER, MAKER, AMOUNT, H, TIMEOUT);
     }
 
     function test_lock_records_terms_and_takes_tokens() public {
         bytes32 id = lock(token);
         require(id == htlc.lockId(address(token), TAKER, MAKER, AMOUNT, H, TIMEOUT), "id");
-        (address t, address sender, address receiver, uint256 amount, bytes32 h, uint64 timeout, RequantHtlc.State s) =
-            htlc.locks(id);
-        require(t == address(token) && sender == TAKER && receiver == MAKER, "parties");
-        require(amount == AMOUNT && h == H && timeout == TIMEOUT, "terms");
-        require(s == RequantHtlc.State.Open, "open");
+        require(state(id) == RequantHtlc.State.Open, "open");
         require(token.balanceOf(address(htlc)) == AMOUNT && token.balanceOf(TAKER) == 100_000_000 - AMOUNT, "moved");
     }
 
     function test_the_secret_pays_the_receiver_whoever_submits_it() public {
         bytes32 id = lock(token);
         vm.prank(STRANGER);
-        htlc.claim(id, SECRET);
+        claim(token, SECRET);
         require(token.balanceOf(MAKER) == AMOUNT && token.balanceOf(address(htlc)) == 0, "paid");
         require(token.balanceOf(STRANGER) == 0, "stranger");
         require(state(id) == RequantHtlc.State.Claimed, "claimed");
@@ -151,55 +158,67 @@ contract RequantHtlcTest {
     function test_a_wrong_secret_is_refused() public {
         bytes32 id = lock(token);
         vm.expectRevert(bytes("secret"));
-        htlc.claim(id, bytes32(uint256(1)));
+        claim(token, bytes32(uint256(1)));
     }
 
     function test_no_claim_from_the_timeout_on() public {
         bytes32 id = lock(token);
         vm.warp(TIMEOUT);
         vm.expectRevert(bytes("expired"));
-        htlc.claim(id, SECRET);
+        claim(token, SECRET);
     }
 
     function test_no_refund_before_the_timeout() public {
         bytes32 id = lock(token);
         vm.warp(TIMEOUT - 1);
         vm.expectRevert(bytes("early"));
-        htlc.refund(id);
+        refund(token);
     }
 
     function test_the_refund_goes_to_the_sender_whoever_asks() public {
         bytes32 id = lock(token);
         vm.warp(TIMEOUT);
         vm.prank(STRANGER);
-        htlc.refund(id);
+        refund(token);
         require(token.balanceOf(TAKER) == 100_000_000 && token.balanceOf(address(htlc)) == 0, "refunded");
         require(state(id) == RequantHtlc.State.Refunded, "state");
     }
 
     function test_a_lock_settles_once() public {
         bytes32 id = lock(token);
-        htlc.claim(id, SECRET);
+        claim(token, SECRET);
         vm.expectRevert(bytes("state"));
-        htlc.claim(id, SECRET);
+        claim(token, SECRET);
         vm.warp(TIMEOUT);
         vm.expectRevert(bytes("state"));
-        htlc.refund(id);
+        refund(token);
     }
 
     function test_refunded_cannot_be_claimed() public {
         bytes32 id = lock(token);
         vm.warp(TIMEOUT);
-        htlc.refund(id);
+        refund(token);
         vm.expectRevert(bytes("state"));
-        htlc.claim(id, SECRET);
+        claim(token, SECRET);
     }
 
     function test_unknown_lock_is_refused() public {
         vm.expectRevert(bytes("state"));
-        htlc.claim(bytes32(uint256(7)), SECRET);
+        claim(token, SECRET);
+        vm.warp(TIMEOUT);
         vm.expectRevert(bytes("state"));
-        htlc.refund(bytes32(uint256(7)));
+        refund(token);
+    }
+
+    function test_changed_terms_name_no_lock() public {
+        lock(token);
+        vm.expectRevert(bytes("state"));
+        htlc.claim(address(token), TAKER, STRANGER, AMOUNT, H, TIMEOUT, SECRET);
+        vm.expectRevert(bytes("state"));
+        htlc.claim(address(token), TAKER, MAKER, AMOUNT + 1, H, TIMEOUT, SECRET);
+        vm.warp(TIMEOUT + 1 days);
+        vm.expectRevert(bytes("state"));
+        htlc.refund(address(token), STRANGER, MAKER, AMOUNT, H, TIMEOUT);
     }
 
     function test_the_same_terms_twice_are_refused() public {
@@ -230,7 +249,7 @@ contract RequantHtlcTest {
         vm.prank(TAKER);
         t.approve(address(htlc), AMOUNT);
         bytes32 id = lock(t);
-        htlc.claim(id, SECRET);
+        claim(t, SECRET);
         require(t.balanceOf(MAKER) == AMOUNT, "paid");
     }
 
@@ -251,9 +270,9 @@ contract RequantHtlcTest {
         t.approve(address(htlc), AMOUNT);
         bytes32 id = lock(t);
         vm.warp(TIMEOUT);
-        t.arm(htlc, id);
+        t.arm(htlc, TAKER, MAKER, AMOUNT, H, TIMEOUT);
         vm.expectRevert(bytes("token"));
-        htlc.refund(id);
+        refund(t);
         require(state(id) == RequantHtlc.State.Open && t.balanceOf(address(htlc)) == AMOUNT, "untouched");
     }
 }

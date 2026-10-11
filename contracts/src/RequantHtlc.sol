@@ -6,8 +6,12 @@ pragma solidity 0.8.20;
 /// (unix seconds), and goes back to `sender` from `timeout` on. Anyone may submit the secret or ask for
 /// the refund; the tokens only ever go to the receiver or back to the sender.
 ///
+/// Only the state of a lock is stored, under an id that hashes all its terms; claim and refund pass the
+/// terms again (they are in the Locked event). One storage slot per lock keeps a lock cheap in energy.
+///
 /// Token movements are checked by the contract's balance, not by the token's return value: some tokens,
-/// USDT among them, do not return one reliably. Fee-on-transfer tokens are refused.
+/// USDT among them, do not return one reliably. Fee-on-transfer tokens are refused. States change before
+/// any token call, and the balance checks fail if a token calls back to move other locks' tokens.
 contract RequantHtlc {
     enum State {
         None,
@@ -16,18 +20,7 @@ contract RequantHtlc {
         Refunded
     }
 
-    struct Lock {
-        address token;
-        address sender;
-        address receiver;
-        uint256 amount;
-        bytes32 hash;
-        uint64 timeout;
-        State state;
-    }
-
-    mapping(bytes32 => Lock) public locks;
-    bool private entered;
+    mapping(bytes32 => State) public states;
 
     event Locked(
         bytes32 indexed id,
@@ -41,13 +34,6 @@ contract RequantHtlc {
     event Claimed(bytes32 indexed id, bytes32 secret);
     event Refunded(bytes32 indexed id);
 
-    modifier guarded() {
-        require(!entered, "reentrant");
-        entered = true;
-        _;
-        entered = false;
-    }
-
     /// The id of a lock is a hash of all its terms, so nobody can take an id another sender wants.
     function lockId(address token, address sender, address receiver, uint256 amount, bytes32 hash, uint64 timeout)
         public
@@ -60,7 +46,6 @@ contract RequantHtlc {
     /// Locks `amount` of `token` from the caller, who must have approved this contract for it.
     function lock(address token, address receiver, uint256 amount, bytes32 hash, uint64 timeout)
         external
-        guarded
         returns (bytes32 id)
     {
         require(amount > 0, "amount");
@@ -68,32 +53,42 @@ contract RequantHtlc {
         require(timeout > block.timestamp, "timeout");
         require(token.code.length > 0, "token");
         id = lockId(token, msg.sender, receiver, amount, hash, timeout);
-        require(locks[id].state == State.None, "exists");
+        require(states[id] == State.None, "exists");
+        states[id] = State.Open;
         uint256 before = balance(token);
         tokenCall(token, abi.encodeWithSelector(0x23b872dd, msg.sender, address(this), amount));
         require(balance(token) - before == amount, "transfer");
-        locks[id] = Lock(token, msg.sender, receiver, amount, hash, timeout, State.Open);
         emit Locked(id, token, msg.sender, receiver, amount, hash, timeout);
     }
 
     /// Pays the receiver against the secret, before the timeout.
-    function claim(bytes32 id, bytes32 secret) external guarded {
-        Lock storage l = locks[id];
-        require(l.state == State.Open, "state");
-        require(block.timestamp < l.timeout, "expired");
-        require(sha256(abi.encodePacked(secret)) == l.hash, "secret");
-        l.state = State.Claimed;
-        pay(l.token, l.receiver, l.amount);
+    function claim(
+        address token,
+        address sender,
+        address receiver,
+        uint256 amount,
+        bytes32 hash,
+        uint64 timeout,
+        bytes32 secret
+    ) external {
+        bytes32 id = lockId(token, sender, receiver, amount, hash, timeout);
+        require(states[id] == State.Open, "state");
+        require(block.timestamp < timeout, "expired");
+        require(sha256(abi.encodePacked(secret)) == hash, "secret");
+        states[id] = State.Claimed;
+        pay(token, receiver, amount);
         emit Claimed(id, secret);
     }
 
     /// Returns the tokens to the sender, from the timeout on.
-    function refund(bytes32 id) external guarded {
-        Lock storage l = locks[id];
-        require(l.state == State.Open, "state");
-        require(block.timestamp >= l.timeout, "early");
-        l.state = State.Refunded;
-        pay(l.token, l.sender, l.amount);
+    function refund(address token, address sender, address receiver, uint256 amount, bytes32 hash, uint64 timeout)
+        external
+    {
+        bytes32 id = lockId(token, sender, receiver, amount, hash, timeout);
+        require(states[id] == State.Open, "state");
+        require(block.timestamp >= timeout, "early");
+        states[id] = State.Refunded;
+        pay(token, sender, amount);
         emit Refunded(id);
     }
 
