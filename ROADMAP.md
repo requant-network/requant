@@ -78,7 +78,10 @@ test network.
 - [x] One-way payment channels in the wallet (wallet 0.7.0): `channel open/accept/fund/pay/receive/close/
       refund/show`; the deposit is sent only after the server signed the refund.
 - [ ] One-way channels in MagnetGate: the service accepts states for traffic; a wallet in the apps.
-- [ ] HTLC swaps with Bitcoin-family chains and EVM; maker bot; documented privacy limits.
+- [x] RQT<->BTC swaps with a maker (wallet 0.8.0): Bitcoin P2WSH HTLC, `swap buy/status/claim/refund`,
+      `requant-maker`; both chains tested together on regtest.
+- [ ] The maker on the test networks (Requant testnet + Bitcoin signet); a Buy RQT screen in the apps.
+- [ ] Litecoin, Bitcoin Cash and Dogecoin on the same HTLC; EVM, TRON and TON contracts.
 - [ ] RQT↔XMR swaps: ed25519 adaptor signatures, MuSig2 key aggregation, cancel/refund/punish
       transfers; external cryptographic review before real value.
 - [ ] Confirmation-depth policy for swaps, scaled to amount and hashrate.

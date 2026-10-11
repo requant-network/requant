@@ -173,6 +173,97 @@ pub fn revealed_secret(tx: &Transaction, htlc: &Htlc) -> Option<[u8; 32]> {
     })
 }
 
+/// A minimal JSON-RPC client of a Bitcoin Core node (`user:password` basic auth), for the maker.
+pub struct Bitcoind {
+    addr: std::net::SocketAddr,
+    auth: String,
+}
+
+fn base64(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for c in data.chunks(3) {
+        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+        for k in 0..4 {
+            out.push(if k <= c.len() { T[(n >> (18 - 6 * k) & 63) as usize] as char } else { '=' });
+        }
+    }
+    out
+}
+
+impl Bitcoind {
+    /// `addr`: host:port of the node's RPC; `user_pass`: `user:password` (as in rpcauth or a .cookie file).
+    pub fn new(addr: &str, user_pass: &str) -> Result<Bitcoind, String> {
+        use std::net::ToSocketAddrs;
+        let addr = addr.to_socket_addrs().map_err(|e| e.to_string())?.next().ok_or("no address")?;
+        Ok(Bitcoind { addr, auth: base64(user_pass.trim().as_bytes()) })
+    }
+
+    pub fn call(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value, String> {
+        use std::io::{Read, Write};
+        let body = serde_json::json!({"jsonrpc": "1.0", "id": 1, "method": method, "params": params}).to_string();
+        let mut s = std::net::TcpStream::connect_timeout(&self.addr, std::time::Duration::from_secs(15))
+            .map_err(|e| format!("bitcoind: {e}"))?;
+        s.set_read_timeout(Some(std::time::Duration::from_secs(120))).map_err(|e| e.to_string())?;
+        write!(
+            s,
+            "POST / HTTP/1.1\r\nHost: localhost\r\nAuthorization: Basic {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            self.auth,
+            body.len()
+        )
+        .map_err(|e| e.to_string())?;
+        let mut resp = String::new();
+        s.read_to_string(&mut resp).map_err(|e| format!("bitcoind: {e}"))?;
+        let json = resp.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or("");
+        let v: serde_json::Value = serde_json::from_str(json)
+            .map_err(|_| "bitcoind: not a JSON answer (check the RPC credentials)".to_string())?;
+        if !v["error"].is_null() {
+            return Err(format!("bitcoind: {}", v["error"]["message"].as_str().unwrap_or("error")));
+        }
+        Ok(v["result"].clone())
+    }
+
+    pub fn height(&self) -> Result<u32, String> {
+        self.call("getblockcount", serde_json::json!([]))?.as_u64().map(|h| h as u32).ok_or("bad getblockcount".into())
+    }
+
+    /// Confirmed outputs paying `address`: `(outpoint, satoshis, height)`.
+    pub fn unspent(&self, address: &Address) -> Result<Vec<(OutPoint, u64, u32)>, String> {
+        let r = self.call("scantxoutset", serde_json::json!(["start", [format!("addr({address})")]]))?;
+        let list = r["unspents"].as_array().ok_or("bad scantxoutset")?;
+        list.iter()
+            .map(|u| {
+                let txid = u["txid"].as_str().and_then(|t| t.parse().ok()).ok_or("bad txid")?;
+                let vout = u["vout"].as_u64().ok_or("bad vout")? as u32;
+                let sats = (u["amount"].as_f64().ok_or("bad amount")? * 1e8).round() as u64;
+                Ok((OutPoint { txid, vout }, sats, u["height"].as_u64().unwrap_or(0) as u32))
+            })
+            .collect()
+    }
+
+    pub fn send(&self, tx: &Transaction) -> Result<String, String> {
+        let txid =
+            self.call("sendrawtransaction", serde_json::json!([bitcoin::consensus::encode::serialize_hex(tx)]))?;
+        Ok(txid.as_str().unwrap_or_default().to_string())
+    }
+
+    /// Confirmations of a transaction this node knows (0 while pooled; None when unknown).
+    pub fn confirmations(&self, txid: &str) -> Option<u64> {
+        self.call("getrawtransaction", serde_json::json!([txid, true]))
+            .ok()
+            .map(|v| v["confirmations"].as_u64().unwrap_or(0))
+    }
+
+    /// A fee rate in satoshis per virtual byte for confirmation within `blocks` (2 when the node has no estimate).
+    pub fn fee_rate(&self, blocks: u32) -> u64 {
+        self.call("estimatesmartfee", serde_json::json!([blocks]))
+            .ok()
+            .and_then(|v| v["feerate"].as_f64())
+            .map(|btc_per_kvb| ((btc_per_kvb * 1e8 / 1000.0).ceil() as u64).max(1))
+            .unwrap_or(2)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,6 +300,13 @@ mod tests {
         assert_eq!(refund.lock_time, LockTime::from_height(300).unwrap());
         assert_eq!(refund.input[0].sequence, Sequence::ENABLE_LOCKTIME_NO_RBF);
         assert_eq!(revealed_secret(&refund, &h), None);
+    }
+
+    #[test]
+    fn basic_auth_encoding() {
+        assert_eq!(base64(b"u:p"), "dTpw");
+        assert_eq!(base64(b"user:pass"), "dXNlcjpwYXNz");
+        assert_eq!(base64(b"ab"), "YWI=");
     }
 
     #[test]

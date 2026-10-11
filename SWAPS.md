@@ -1,7 +1,8 @@
 # Swaps and payment channels
 
 Status: **consensus primitives, pool policy, package relay, wallet commands and one-way payment
-channels in the wallet; no swap or two-way channel software yet.** Since
+channels in the wallet, RQT<->BTC swaps with a maker; no EVM, Monero or two-way channel software
+yet.** Since
 node 0.15.0 the chain has 2-of-2 conditions, hash/time-locked contracts (HTLCs) and absolute and
 relative time locks ([CHAIN.md §4.1](CHAIN.md)); since node 0.16.0 also revocable outputs, revocable
 HTLCs and anyone-can-pay signatures ([§4.2](CHAIN.md)), and a pool that ranks packages (child pays for
@@ -42,6 +43,32 @@ Party A picks a secret `s` and publishes `H = SHA256(s)`.
 
 If either side stops, both refund after their timeouts. The RQT timeout must be the later one
 (`t_RQT` well after `t_other`), so that B always has time to use `s` once A reveals it.
+
+### Implemented: buying RQT with BTC from a maker (wallet 0.8.0)
+
+The party with the secret pays first and has the longer time lock, so here the taker (who has BTC and
+wants RQT) goes first:
+
+1. `requant-wallet swap buy MAKER AMOUNT WALLET --out SWAP.json`: the taker picks the secret and a
+   Bitcoin refund key; the maker answers with a P2WSH HTLC (claim: the maker's key with the secret;
+   refund: the taker's key after 144 Bitcoin blocks, about a day) and its price. The wallet checks the
+   address against the parameters before showing it. The taker pays it from any Bitcoin wallet.
+2. Once the payment has its confirmations (1 up to 0.01 BTC, 3 up to 0.1, 6 above), `requant-maker`
+   locks the RQT in a Requant HTLC with the same hash: claim by the taker, refund to the maker after 360
+   Requant blocks (about six hours). It does so only while at least 72 Bitcoin blocks (about twelve
+   hours) are left to the taker's refund, so a claim at the last Requant moment still leaves it time.
+3. `swap claim SWAP.json WALLET` takes the RQT and reveals the secret on Requant; the maker reads it
+   there and claims the BTC.
+
+If the maker never locks (unpaid within 12 blocks, underpaid, paid too late), the taker takes the BTC
+back with `swap refund SWAP.json BTC_ADDRESS` from the Bitcoin timeout; if the taker never claims, the
+maker takes the RQT back at the Requant timeout. The Bitcoin script requires a 32-byte secret
+(`OP_SIZE 32`), as Requant does, so a secret of another length cannot open one side only.
+
+`requant-maker run CONFIG.json` serves takers over JSON-RPC (`info`, `swap_create`, `swap_status`) and
+needs a Bitcoin Core node and a Requant node API. `tests/test_swap_e2e.py` runs both chains on regtest
+(a completed swap, an underpaid and a late one refunded to the taker, one the taker never claims) with
+`BITCOIND=/path/to/bitcoind`.
 
 **Privacy: weak, and it should be said so.** The same `H` appears on both chains, and the amounts and
 timing match. Anyone watching both chains can link the two halves. The HTLC is also visible on RQT

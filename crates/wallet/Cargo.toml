@@ -1,6 +1,6 @@
 [package]
 name = "requant-wallet"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "Requant wallet: a 24-word backup phrase and many addresses, offline signing, payments through a node."
@@ -22,3 +22,7 @@ bitcoin = { version = "=0.32.102", default-features = false, features = ["std"] 
 [[bin]]
 name = "requant-wallet"
 path = "src/main.rs"
+
+[[bin]]
+name = "requant-maker"
+path = "src/bin/requant-maker.rs"

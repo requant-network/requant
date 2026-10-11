@@ -6,6 +6,8 @@ pub mod btc;
 pub mod channel;
 pub mod contracts;
 pub mod hd;
+pub mod maker;
+pub mod swap;
 pub mod wallet;
 
 use ed25519_dalek::SigningKey;
