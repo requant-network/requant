@@ -77,19 +77,22 @@ test network.
 - [ ] Two-way channels on the revocable templates; routed payments over revocable HTLCs.
 - [x] One-way payment channels in the wallet (wallet 0.7.0): `channel open/accept/fund/pay/receive/close/
       refund/show`; the deposit is sent only after the server signed the refund.
-- [ ] One-way channels in MagnetGate: the service accepts states for traffic; a wallet in the apps.
+- [x] One-way channels in MagnetGate: the service accepts states for traffic; a wallet in the apps
+      (Windows 0.3.7, Android build 278).
 - [x] RQT<->BTC swaps with a maker (wallet 0.8.0): Bitcoin P2WSH HTLC, `swap buy/status/claim/refund`,
       `requant-maker`; both chains tested together on regtest.
-- [x] Paying over Lightning (wallet 0.8.0): hold invoices with the taker's hash, `swap buy-ln`, LND in
+- [x] Paying over Lightning (wallet 0.9.0): hold invoices with the taker's hash, `swap buy-ln`, LND in
       `requant-maker`; a payment the maker does not complete goes back by itself; tested on regtest.
-- [ ] The maker on the test networks (Requant testnet + Bitcoin signet, LND); a Buy RQT screen in the apps.
-- [ ] Litecoin, Bitcoin Cash and Dogecoin on the same HTLC; EVM, TRON and TON contracts.
+- [x] The maker on the test networks (Requant testnet + Bitcoin signet, LND); a Buy RQT screen in the apps
+      (MagnetGate Windows 0.3.8, Android build 281); swaps on chain and over Lightning done live.
+- [ ] Litecoin, Bitcoin Cash and Dogecoin on the same HTLC; EVM, TRON and TON contracts (USDT on TRON next).
 - [ ] RQT↔XMR swaps: ed25519 adaptor signatures, MuSig2 key aggregation, cancel/refund/punish
       transfers; external cryptographic review before real value.
 - [ ] Confirmation-depth policy for swaps, scaled to amount and hashrate.
-- [ ] MagnetGate payments ([design](https://github.com/danifest751/magnetgate/blob/main/PAYMENTS.md)): a deposit
-      watcher library (per-account addresses, confirmations, crediting each deposit once) and a batch
-      payout service generalised from the pool's payouts; WASM/JNI bindings of the wallet cores.
+- [x] MagnetGate payments ([design](https://github.com/danifest751/magnetgate/blob/main/PAYMENTS.md)): a deposit
+      address per access code, credited once after 6 confirmations; the apps run the wallet CLI itself
+      (bundled, on Android as a native library) instead of WASM/JNI bindings.
+- [ ] A batch payout service to service operators, generalised from the pool's payouts.
 
 ## 3. Miner
 
