@@ -4,6 +4,9 @@
 //! requant-maker btc-address FILE NETWORK the P2WPKH address of that key (a place for the BTC it claims)
 //! requant-maker tron-keygen FILE         a TRON key: it receives the USDT the maker claims
 //! requant-maker tron-address FILE        that key's TRON address (fund it with TRX for claim fees)
+//! requant-maker tron-status FILE NETWORK its TRX, USDT, energy and stake
+//! requant-maker tron-stake FILE NETWORK TRX   stake TRX for energy: the maker's claims use it, and it
+//!                                        lends it to takers for their locks (else it sends TRX to burn)
 //! requant-maker run CONFIG.json          serve takers and run the swaps
 //!
 //! CONFIG.json:
@@ -23,7 +26,8 @@
 //! RQT locks and receives refunds. `bitcoind_auth` holds `user:password` or is the node's `.cookie`.
 //! Takers call JSON-RPC `info`, `swap_create [rqt_atoms, hash, btc_refund_pubkey, rqt_address]` and
 //! `swap_status [id]`; `swap_create_ln [rqt_atoms, hash, rqt_address]` and
-//! `swap_create_usdt [rqt_atoms, hash, tron_sender, rqt_address]` when configured.
+//! `swap_create_usdt [rqt_atoms, hash, tron_sender, rqt_address]` and `swap_fees [id]` (the maker pays the
+//! fees of the taker's lock) when configured.
 
 use requant_consensus::params::Network;
 use requant_node::rpc::{hex, serve_with, Handler};
@@ -128,6 +132,26 @@ address {}", tron::to_base58(&a));
         ["tron-address", file] => {
             println!("{}", tron::to_base58(&tron::address_of(&key32(file)).unwrap_or_else(|e| die(&e))));
         }
+        ["tron-status", file, network] => {
+            let api = Tron::new(tron::deployment(network).unwrap_or_else(|e| die(&e)).api);
+            let me = tron::address_of(&key32(file)).unwrap_or_else(|e| die(&e));
+            let d = tron::deployment(network).unwrap();
+            let usdt = api.token_balance(&tron::parse(d.usdt).unwrap(), &me).unwrap_or_else(|e| die(&e));
+            println!("address   {}", tron::to_base58(&me));
+            println!("TRX       {}", api.trx_balance(&me).unwrap_or_else(|e| die(&e)) as f64 / 1e6);
+            println!("USDT      {}", tron::format_units(usdt));
+            println!("energy    {} now; lendable stake {} TRX", api.energy(&me).unwrap_or(0), api.can_delegate(&me).unwrap_or(0) as f64 / 1e6);
+            let one = tron::APPROVE_ENERGY + tron::LOCK_ENERGY;
+            println!("one lock  {one} energy = {} TRX staked", api.stake_for_energy(&me, one).unwrap_or(0) / 1_000_000);
+        }
+        ["tron-stake", file, network, trx] => {
+            let api = Tron::new(tron::deployment(network).unwrap_or_else(|e| die(&e)).api);
+            let key = key32(file);
+            let me = tron::address_of(&key).unwrap_or_else(|e| die(&e));
+            let sun = trx.parse::<u64>().unwrap_or_else(|_| die("TRX: a whole number")) * 1_000_000;
+            let raw = tron::freeze_energy(&api.now_block().unwrap_or_else(|e| die(&e)), &me, sun);
+            println!("staked for energy in {}", api.send_raw(&key, &raw).unwrap_or_else(|e| die(&e)));
+        }
         ["btc-address", file, network] => {
             let net = btc::network(network).unwrap_or_else(|e| die(&e));
             let pubkey = btc::public_key(&key32(file)).unwrap_or_else(|e| die(&e));
@@ -164,6 +188,7 @@ address {}", tron::to_base58(&a));
                         };
                         mk.create_token(atoms, &text(1)?, &text(2)?, &text(3)?)
                     }
+                    "swap_fees" => mk.pay_fees(arg(0)?.as_str().ok_or("parameter 0: id")?),
                     "swap_status" => mk.status(arg(0)?.as_str().ok_or("parameter 0: id")?),
                     _ => Err(format!("unknown method {method}")),
                 }
@@ -179,6 +204,6 @@ address {}", tron::to_base58(&a));
                 std::thread::sleep(std::time::Duration::from_secs(tick));
             }
         }
-        _ => die("usage: requant-maker btc-keygen FILE | btc-address FILE NETWORK | tron-keygen FILE | tron-address FILE | run CONFIG.json"),
+        _ => die("usage: requant-maker btc-keygen FILE | btc-address FILE NETWORK | tron-keygen FILE | tron-address FILE | tron-status FILE NETWORK | tron-stake FILE NETWORK TRX | run CONFIG.json"),
     }
 }

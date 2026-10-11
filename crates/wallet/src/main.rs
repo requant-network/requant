@@ -1171,7 +1171,11 @@ fn main() {
                                 "terms": terms.json(), "funding_deadline": deadline});
             write_file(file, &serde_json::to_string_pretty(&record).unwrap());
             println!("send     {} USDT (TRC-20, TRON {tron_net}) to {}", tron::format_units(terms.amount), tron::to_base58(&sender));
-            println!("and      about 10 TRX to the same address for the fees (the lock spends energy)");
+            if u["pays_fees"] == json!(true) {
+                println!("fees     paid by the maker: only the USDT is needed");
+            } else {
+                println!("and      about 10 TRX to the same address for the fees (the lock spends energy)");
+            }
             println!("lock     within {} minutes: `swap lock {file}`", deadline.saturating_sub(now) / 60);
             println!("receive  {} RQT at {}", format_amount(atoms), address(&net, &claim));
             eprintln!("swap written to {file}: it holds the secret and the key of that TRON address. Once the RQT are locked (`swap status {file}`), `swap claim {file} WALLET`. If the maker does not lock them, `swap refund {file}` from unix time {} and `swap withdraw {file} TRON_ADDRESS`.", terms.timeout);
@@ -1258,6 +1262,17 @@ fn main() {
                     tx.sign(&net.chain_id, &vec![key; held.len()]);
                     eprintln!("  claim {} RQT (fee {} RQT); this reveals the secret to the maker", format_amount(tx.outputs()[0].value), format_amount(fee));
                     println!("sent, txid {}", send(&rpc(), &tx));
+                    // the maker sent TRX for the lock's fees: what was not burned goes back to it
+                    if let (Some((api, _, terms, key)), true) = (&tron_side, st["fees"]["way"] == json!("trx")) {
+                        let left = api.trx_balance(&terms.sender).unwrap_or(0).saturating_sub(300_000);
+                        let back = left.min(st["fees"]["sun"].as_u64().unwrap_or(0));
+                        if back >= 100_000 {
+                            match api.send_trx(key, &terms.receiver, back) {
+                                Ok(txid) => eprintln!("  returned {} TRX of the maker's fees in {txid}", back as f64 / 1e6),
+                                Err(e) => eprintln!("  could not return the maker's TRX: {e}"),
+                            }
+                        }
+                    }
                 }
                 ("lock", []) => {
                     let (api, htlc, terms, key) = tron_side.as_ref().unwrap();
@@ -1274,7 +1289,27 @@ fn main() {
                     if held < terms.amount {
                         die(&format!("send {} USDT to {} first (it holds {})", tron::format_units(terms.amount), tron::to_base58(&me), tron::format_units(held)));
                     }
-                    if !api.allowance(&terms.token, &me, htlc).unwrap_or_else(|e| die(&e)) {
+                    let approved = api.allowance(&terms.token, &me, htlc).unwrap_or_else(|e| die(&e));
+                    let need = tron::LOCK_ENERGY + if approved { 0 } else { tron::APPROVE_ENERGY };
+                    if !api.can_pay(&me, need).unwrap_or_else(|e| die(&e)) {
+                        // the maker pays the fees: it lends energy or sends the TRX to burn
+                        let fees = requant_node::rpc::request(maker_at, "swap_fees", json!([v["id"]])).unwrap_or_else(|e| {
+                            die(&format!("the address cannot pay the fees and the maker will not ({e}); send it about 10 TRX"))
+                        });
+                        eprintln!("  the maker pays the fees ({}): waiting for them to arrive", fees["way"].as_str().unwrap_or("?"));
+                        let mut ready = false;
+                        for _ in 0..30 {
+                            if api.can_pay(&me, need).unwrap_or(false) {
+                                ready = true;
+                                break;
+                            }
+                            std::thread::sleep(std::time::Duration::from_secs(3));
+                        }
+                        if !ready {
+                            die(&format!("the maker's fees have not arrived yet ({fees}); try `swap lock {file}` again in a minute"));
+                        }
+                    }
+                    if !approved {
                         let (txid, _) = api.send_call(key, &terms.token, &tron::approve_max_call(htlc), 30_000_000).unwrap_or_else(|e| die(&e));
                         eprintln!("  approve {txid}: waiting for it to be irreversible (about a minute)");
                         let o = tron_wait(api, &txid);

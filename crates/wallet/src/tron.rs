@@ -278,6 +278,36 @@ pub fn transfer(block: &RefBlock, owner: &Addr, to: &Addr, sun: u64) -> Vec<u8> 
     raw(block, 1, "TransferContract", &p, 0)
 }
 
+/// Stake 2.0, energy only (ResourceCode ENERGY = 1): stake `sun` of the owner's TRX for energy.
+pub fn freeze_energy(block: &RefBlock, owner: &Addr, sun: u64) -> Vec<u8> {
+    let mut p = Vec::new();
+    field_bytes(&mut p, 1, owner);
+    field_varint(&mut p, 2, sun);
+    field_varint(&mut p, 3, 1);
+    raw(block, 54, "FreezeBalanceV2Contract", &p, 0)
+}
+
+/// Lend the energy of `sun` staked TRX to `receiver` (`undo`: take it back).
+pub fn delegate_energy(block: &RefBlock, owner: &Addr, receiver: &Addr, sun: u64, undo: bool) -> Vec<u8> {
+    let mut p = Vec::new();
+    field_bytes(&mut p, 1, owner);
+    field_varint(&mut p, 2, 1);
+    field_varint(&mut p, 3, sun);
+    field_bytes(&mut p, 4, receiver);
+    if undo {
+        raw(block, 58, "UnDelegateResourceContract", &p, 0)
+    } else {
+        raw(block, 57, "DelegateResourceContract", &p, 0)
+    }
+}
+
+/// Energy a USDT lock may take from a swap's address: the approval (once per address; 22,688 on Nile)
+/// and the lock (43,638 on Nile; more on the main network, where USDT costs more), with room to spare.
+pub const APPROVE_ENERGY: u64 = 30_000;
+pub const LOCK_ENERGY: u64 = 70_000;
+/// Bandwidth of the approval and the lock, should the address's free bandwidth be used up (sun).
+pub const LOCK_BANDWIDTH_SUN: u64 = 1_000_000;
+
 pub fn txid(raw: &[u8]) -> [u8; 32] {
     crate::swap::sha256(raw)
 }
@@ -408,9 +438,65 @@ impl Tron {
 
     pub fn send_trx(&self, secret: &[u8; 32], to: &Addr, sun: u64) -> Result<String, String> {
         let owner = address_of(secret)?;
-        let (signed, id) = sign(&transfer(&self.now_block()?, &owner, to, sun), secret)?;
+        self.send_raw(secret, &transfer(&self.now_block()?, &owner, to, sun))
+    }
+
+    /// Signs and relays a transaction built here; its id.
+    pub fn send_raw(&self, secret: &[u8; 32], raw: &[u8]) -> Result<String, String> {
+        let (signed, id) = sign(raw, secret)?;
         self.broadcast(&signed)?;
         Ok(hex(&id))
+    }
+
+    pub fn exists(&self, who: &Addr) -> Result<bool, String> {
+        let a = self.post("/wallet/getaccount", json!({"address": to_base58(who), "visible": true}))?;
+        Ok(a.as_object().is_some_and(|o| !o.is_empty()))
+    }
+
+    /// The address's energy left now (its own staked and what others lend it).
+    pub fn energy(&self, who: &Addr) -> Result<u64, String> {
+        let r = self.post("/wallet/getaccountresource", json!({"address": to_base58(who), "visible": true}))?;
+        Ok(r["EnergyLimit"].as_u64().unwrap_or(0).saturating_sub(r["EnergyUsed"].as_u64().unwrap_or(0)))
+    }
+
+    /// Sun of staked TRX that gives `energy` a day at the network's current ratio, rounded up to whole TRX
+    /// (the totals come with any account's resources: `owner`'s).
+    pub fn stake_for_energy(&self, owner: &Addr, energy: u64) -> Result<u64, String> {
+        let r = self.post("/wallet/getaccountresource", json!({"address": to_base58(owner), "visible": true}))?;
+        let (limit, weight) =
+            (r["TotalEnergyLimit"].as_u64().unwrap_or(0), r["TotalEnergyWeight"].as_u64().unwrap_or(0));
+        if limit == 0 || weight == 0 {
+            return Err("TRON API: no energy totals".into());
+        }
+        Ok(((energy as u128 * weight as u128).div_ceil(limit as u128) as u64) * 1_000_000)
+    }
+
+    /// Sun of the owner's staked TRX whose energy it can lend now.
+    pub fn can_delegate(&self, owner: &Addr) -> Result<u64, String> {
+        let r = self.post(
+            "/wallet/getcandelegatedmaxsize",
+            json!({"owner_address": to_base58(owner), "type": 1, "visible": true}),
+        )?;
+        Ok(r["max_size"].as_u64().unwrap_or(0))
+    }
+
+    /// A chain parameter (`getEnergyFee`: sun burned per energy unit, `getTransactionFee`: per byte).
+    pub fn parameter(&self, key: &str) -> Result<u64, String> {
+        let r = self.post("/wallet/getchainparameters", json!({}))?;
+        r["chainParameter"]
+            .as_array()
+            .and_then(|ps| ps.iter().find(|p| p["key"] == json!(key)))
+            .and_then(|p| p["value"].as_u64())
+            .ok_or(format!("TRON API: no parameter {key}"))
+    }
+
+    /// Whether an address can pay for `energy` now: with energy, or with TRX to burn for it.
+    pub fn can_pay(&self, who: &Addr, energy: u64) -> Result<bool, String> {
+        let have = self.energy(who)?;
+        if have >= energy {
+            return Ok(self.trx_balance(who)? >= LOCK_BANDWIDTH_SUN / 2);
+        }
+        Ok(self.trx_balance(who)? >= (energy - have) * self.parameter("getEnergyFee")? + LOCK_BANDWIDTH_SUN)
     }
 
     /// Whether a transaction is in an irreversible block, and whether it succeeded there: `None` while it

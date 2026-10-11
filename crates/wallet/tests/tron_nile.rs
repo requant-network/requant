@@ -46,3 +46,28 @@ fn transfers_and_a_contract_call_on_nile() {
     assert!(e.contains("state"), "{e}");
     assert_eq!(t.lock_state(&htlc, &bogus, true).unwrap(), tron::LockState::None);
 }
+
+/// Lending staked energy and taking it back (Stake 2.0). Runs with NILE_STAKER_KEY: a key with at least
+/// 10 TRX staked for energy (`requant-maker tron-stake`).
+#[test]
+fn lend_energy_and_take_it_back_on_nile() {
+    let Ok(path) = std::env::var("NILE_STAKER_KEY") else { return };
+    let key: [u8; 32] =
+        requant_node::rpc::unhex(std::fs::read_to_string(path).unwrap().trim()).unwrap().try_into().unwrap();
+    let t = Tron::new(tron::deployment("nile").unwrap().api);
+    let me = tron::address_of(&key).unwrap();
+    let to = tron::parse("TCNkawTmcQgYSU8nP8cHswT1QPjharxJr7").unwrap();
+    let sun = 10_000_000;
+    assert!(t.can_delegate(&me).unwrap() >= sun, "stake at least 10 TRX for energy");
+    assert!(t.exists(&to).unwrap());
+    let before = t.energy(&to).unwrap();
+    let txid = t.send_raw(&key, &tron::delegate_energy(&t.now_block().unwrap(), &me, &to, sun, false)).unwrap();
+    assert!(wait(&t, &txid).ok, "delegate {txid}");
+    let lent = t.energy(&to).unwrap();
+    eprintln!("energy of the receiver: {before} -> {lent}");
+    assert!(lent > before + 500, "about 736 energy for 10 TRX on Nile");
+    let txid = t.send_raw(&key, &tron::delegate_energy(&t.now_block().unwrap(), &me, &to, sun, true)).unwrap();
+    assert!(wait(&t, &txid).ok, "undelegate {txid}");
+    assert!(t.energy(&to).unwrap() <= before);
+    assert!(t.can_delegate(&me).unwrap() >= sun);
+}

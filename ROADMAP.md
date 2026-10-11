@@ -87,7 +87,9 @@ test network.
       (MagnetGate Windows 0.3.8, Android build 281); swaps on chain and over Lightning done live.
 - [x] USDT on TRON (wallet 0.10.0): the RequantHtlc contract (`contracts/`, Foundry tests), `swap buy-usdt/lock/
       refund/withdraw`, TRON in `requant-maker`; a swap done end to end on the Nile testnet.
-- [ ] Energy delegated by the maker, so a taker needs no TRX; the maker on future with USDT; the app button.
+- [x] The maker pays the taker's TRON fees (`swap_fees`): lent energy from its stake, else TRX to burn,
+      the rest returned by `swap claim`; a taker needs only the USDT.
+- [ ] The maker on future with USDT; release; the app button.
 - [ ] Litecoin, Bitcoin Cash and Dogecoin on the same HTLC; RequantHtlc on EVM chains; TON.
 - [ ] RQT↔XMR swaps: ed25519 adaptor signatures, MuSig2 key aggregation, cancel/refund/punish
       transfers; external cryptographic review before real value.

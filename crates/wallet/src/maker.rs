@@ -42,6 +42,9 @@ const RQT_FEE_RATE: u64 = 2;
 const TRON_CLAIM_FEE_LIMIT: u64 = 30_000_000;
 /// After the funding time, how long the maker still waits for a lock to become irreversible.
 const TOKEN_GRACE_SECS: u64 = 600;
+/// Swaps whose fees the maker pays at once at most, and how long it lends energy for one.
+const MAX_SPONSORED: usize = 10;
+const LEND_SECS: u64 = 3600;
 
 /// The maker's TRON side: it receives USDT at its key's address.
 pub struct TronSide {
@@ -110,6 +113,29 @@ impl Maker {
         btc::public_key(&self.cfg.btc_key).expect("the maker's Bitcoin key")
     }
 
+    /// Refuses a new swap of `atoms` unless the maker's spendable RQT cover it, its fee and every swap
+    /// still waiting to be paid.
+    fn check_liquidity(&self, atoms: u64) -> Result<(), String> {
+        let coins = self.rqt.call("utxos", json!([hex(&self.me())])).map_err(|e| e.to_string())?;
+        let spendable: u64 = coins
+            .as_array()
+            .ok_or("requant: bad utxos")?
+            .iter()
+            .filter(|c| c["spendable"].as_bool() == Some(true))
+            .filter_map(|c| c["value"].as_u64())
+            .sum();
+        let promised: u64 = self
+            .swaps
+            .iter()
+            .filter(|s| matches!(s["state"].as_str(), Some("waiting_btc" | "waiting_ln" | "waiting_token")))
+            .filter_map(|s| s["rqt_atoms"].as_u64())
+            .sum();
+        if spendable < promised + atoms + 100_000 {
+            return Err("the maker has too few RQT for this amount now: try a smaller one or later".into());
+        }
+        Ok(())
+    }
+
     fn rqt_height(&self) -> Result<u64, String> {
         let v = self.rqt.call("getinfo", json!([])).map_err(|e| e.to_string())?;
         v["height"].as_u64().ok_or("requant: no height".into())
@@ -131,7 +157,7 @@ impl Maker {
         json!({"network": t.network, "htlc": d.htlc, "token": d.usdt, "units_per_rqt": t.units_per_rqt,
                "receiver": tron::address_of(&t.key).map(|a| tron::to_base58(&a)).unwrap_or_default(),
                "timeout_secs": swap::TOKEN_TIMEOUT_SECS, "funding_secs": swap::TOKEN_FUNDING_SECS,
-               "rqt_timeout_blocks": swap::TOKEN_RQT_TIMEOUT_BLOCKS})
+               "rqt_timeout_blocks": swap::TOKEN_RQT_TIMEOUT_BLOCKS, "pays_fees": true})
     }
 
     /// A new swap paid with USDT on TRON: the terms of a RequantHtlc lock the taker makes from `sender`.
@@ -147,6 +173,7 @@ impl Maker {
         if self.swaps.iter().any(|s| s["id"] == json!(id)) {
             return Err("a swap with this hash exists: use a new secret".into());
         }
+        self.check_liquidity(rqt_atoms)?;
         let d = tron::deployment(&t.network)?;
         let now = t.api.now()?;
         let terms = Terms {
@@ -185,6 +212,7 @@ impl Maker {
         }
         let btc_tip = self.cfg.bitcoind.height()?;
         let h = btc::Htlc { hash, claim: self.btc_pubkey(), refund, timeout: btc_tip + BTC_TIMEOUT_BLOCKS };
+        self.check_liquidity(rqt_atoms)?;
         let sats = swap::price(rqt_atoms, self.cfg.sats_per_rqt);
         let s = json!({"id": id, "state": "waiting_btc", "created": now(), "created_btc_height": btc_tip,
                        "rqt_atoms": rqt_atoms, "btc_sats": sats, "taker_claim": hex(&claim),
@@ -207,6 +235,7 @@ impl Maker {
         if self.swaps.iter().any(|s| s["id"] == json!(id)) {
             return Err("a swap with this hash exists: use a new secret".into());
         }
+        self.check_liquidity(rqt_atoms)?;
         let sats = swap::price(rqt_atoms, self.cfg.sats_per_rqt);
         let bolt11 = lnd.add_hold_invoice(&hash, sats, LN_INVOICE_SECONDS, LN_CLTV, "RQT")?;
         let s = json!({"id": id, "kind": "ln", "state": "waiting_ln", "created": now(), "rqt_atoms": rqt_atoms,
@@ -232,6 +261,14 @@ impl Maker {
         };
         let btc_tip = self.cfg.bitcoind.height();
         for k in 0..self.swaps.len() {
+            match self.step_reclaim(k) {
+                Ok(Some(what)) => {
+                    log.push(format!("{}: {what}", &self.swaps[k]["id"].as_str().unwrap_or("")[..12]));
+                    let _ = self.save();
+                }
+                Ok(None) => {}
+                Err(e) => log.push(format!("{}: reclaim: {e}", &self.swaps[k]["id"].as_str().unwrap_or("")[..12])),
+            }
             let state = self.swaps[k]["state"].as_str().unwrap_or("").to_string();
             let step = match state.as_str() {
                 "waiting_btc" => btc_tip.clone().and_then(|b| self.step_funding(k, b, rqt_tip)),
@@ -357,6 +394,80 @@ impl Maker {
 
     fn tron(&self) -> Result<&TronSide, String> {
         self.cfg.tron.as_ref().ok_or("no TRON side configured".into())
+    }
+
+    /// Pay the fees of a taker's approval and lock (`swap_fees`): lend energy from the maker's stake when
+    /// it has enough to lend, else send the TRX the address would burn. Once per swap, only while it waits
+    /// for the lock, only when its address already holds the USDT, and for a few swaps at a time.
+    pub fn pay_fees(&mut self, id: &str) -> Result<Value, String> {
+        let k = self.swaps.iter().position(|s| s["id"] == json!(id)).ok_or("no such swap")?;
+        let s = self.swaps[k].clone();
+        if s["kind"] != json!("usdt") || s["state"] != json!("waiting_token") {
+            return Err("only a USDT swap waiting for its lock".into());
+        }
+        if !s["fees"].is_null() {
+            return Ok(s["fees"].clone());
+        }
+        let open = self.swaps.iter().filter(|x| x["state"] == json!("waiting_token") && !x["fees"].is_null()).count();
+        if open >= MAX_SPONSORED {
+            return Err("the maker pays the fees of no more swaps now: send some TRX for them".into());
+        }
+        let t = self.tron()?;
+        let terms = Terms::from_json(&s["terms"])?;
+        let htlc = tron::parse(s["htlc"].as_str().unwrap_or(""))?;
+        let taker = terms.sender;
+        if t.api.token_balance(&terms.token, &taker)? < terms.amount {
+            return Err(format!("send the {} USDT first", tron::format_units(terms.amount)));
+        }
+        let need =
+            tron::LOCK_ENERGY + if t.api.allowance(&terms.token, &taker, &htlc)? { 0 } else { tron::APPROVE_ENERGY };
+        if t.api.can_pay(&taker, need)? {
+            return Ok(json!({"way": "none", "note": "the address can pay its fees"}));
+        }
+        let me = tron::address_of(&t.key)?;
+        let block = t.api.now_block()?;
+        let now = block.timestamp_ms / 1000;
+        let lend = t.api.stake_for_energy(&me, need)?;
+        let fees = if t.api.can_delegate(&me)? >= lend {
+            // activation and bandwidth first: energy cannot be lent to an account that does not exist
+            let mut txids = Vec::new();
+            if t.api.trx_balance(&taker)? < tron::LOCK_BANDWIDTH_SUN / 2 {
+                txids.push(t.api.send_trx(&t.key, &taker, tron::LOCK_BANDWIDTH_SUN)?);
+                for _ in 0..10 {
+                    if t.api.exists(&taker)? {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                }
+            }
+            txids.push(t.api.send_raw(&t.key, &tron::delegate_energy(&t.api.now_block()?, &me, &taker, lend, false))?);
+            json!({"way": "energy", "energy": need, "staked_sun": lend, "txids": txids, "at": now})
+        } else {
+            let sun = need * t.api.parameter("getEnergyFee")? * 11 / 10 + tron::LOCK_BANDWIDTH_SUN;
+            json!({"way": "trx", "sun": sun, "txids": [t.api.send_trx(&t.key, &taker, sun)?], "at": now})
+        };
+        self.set(k, json!({"fees": fees}));
+        self.save()?;
+        Ok(fees)
+    }
+
+    /// Take back energy lent to a taker once its lock is made, or after an hour.
+    fn step_reclaim(&mut self, k: usize) -> Result<Option<String>, String> {
+        let s = self.swaps[k].clone();
+        let f = &s["fees"];
+        if f["way"] != json!("energy") || !f["reclaimed"].is_null() {
+            return Ok(None);
+        }
+        let t = self.tron()?;
+        if s["state"] == json!("waiting_token") && t.api.now()? < f["at"].as_u64().unwrap_or(0) + LEND_SECS {
+            return Ok(None);
+        }
+        let me = tron::address_of(&t.key)?;
+        let taker = Terms::from_json(&s["terms"])?.sender;
+        let sun = f["staked_sun"].as_u64().unwrap_or(0);
+        let txid = t.api.send_raw(&t.key, &tron::delegate_energy(&t.api.now_block()?, &me, &taker, sun, true))?;
+        self.swaps[k]["fees"]["reclaimed"] = json!(txid);
+        Ok(Some(format!("lent energy taken back in {txid}")))
     }
 
     /// Wait for the taker's USDT lock to be irreversible; then lock the RQT.

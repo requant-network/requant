@@ -115,8 +115,18 @@ signs TRON transactions itself (`tron.rs`); the TRON API (TronGrid by default, `
 only reads the chain and relays them. On Nile (2026-10-11) a swap of 1 RQT took the lock (43,638
 energy), the RQT lock, the claim of the RQT and the maker's claim of the USDT (27,403 energy) in about
 four minutes. Configure the maker with `"tron": {"network", "key", "units_per_rqt"}`; its TRON address
-needs TRX (or energy) for its claims. Not yet: energy delegated by the maker, so that the taker needs
-no TRX.
+needs TRX (or energy) for its claims.
+
+The taker needs no TRX: when the swap's address holds the USDT but cannot pay for the approval and
+the lock, `swap lock` asks the maker (`swap_fees`). The maker lends energy from its stake when it has
+enough to lend (`requant-maker tron-stake`; it takes the energy back once the lock is made, or after an
+hour), else it sends the TRX the address would burn, and `swap claim` returns what was not burned. It
+does so once per swap, only for an address that already holds the USDT, and for ten swaps at a time.
+Lending is the cheap way at scale, but the stake is large: about 1,360 staked TRX for the 100,000 energy
+reserved for one lock on Nile (the energy per staked TRX depends on the network's totals); with less,
+the maker pays in TRX (about 5 TRX burned per lock on Nile, on top of its own claim). On Nile, a swap paid
+with USDT only worked end to end that way, and lending 10 staked TRX (736 energy) and taking it back
+worked; a whole swap on lent energy waits for a larger stake.
 
 **Privacy: weak, and it should be said so.** The same `H` appears on both chains, and the amounts and
 timing match. Anyone watching both chains can link the two halves. The HTLC is also visible on RQT
