@@ -13,6 +13,21 @@ use std::net::IpAddr;
 
 const DAY: u64 = 86_400;
 
+/// Public faucet configuration and current spendable balance. Keys and client identities stay private.
+pub fn status(st: &State) -> Value {
+    let Some(f) = &st.faucet else {
+        return json!({ "enabled": false, "network": st.chain.net.name });
+    };
+    json!({
+        "enabled": st.chain.net.name != "main", "network": st.chain.net.name,
+        "address": requant_consensus::address::address(&st.chain.net, &f.owner),
+        "amount_atoms": f.cfg.amount, "daily_atoms": f.cfg.daily,
+        "given_today_atoms": if now() / DAY == f.day { f.given_today } else { 0 },
+        "balance_atoms": coins(st, &f.owner).iter().map(|c| c.1).sum::<u64>(),
+        "cooldown_seconds": DAY,
+    })
+}
+
 #[derive(Clone)]
 pub struct FaucetConfig {
     /// Secret key of the faucet wallet.

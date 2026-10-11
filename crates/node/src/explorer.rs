@@ -2,6 +2,8 @@
 //! transaction and address pages, search, the network and pool pages, `/health`, and the faucet form (its
 //! one write: POST /faucet). Plain HTML, no scripts; values come from the node's own state and are parsed
 //! before use, and text from outside (peer software names, faucet errors) is escaped.
+//! For faucet requests only, `REQUANT_FAUCET_TRUSTED_PROXIES` lists comma-separated exact peer IPs
+//! whose `X-Real-IP` header is trusted. It is empty by default; the edge must overwrite client headers.
 
 use crate::node::{now, Shared};
 use requant_consensus::address::{address, format_amount, parse_address};
@@ -50,6 +52,7 @@ fn handle(shared: &Shared, stream: TcpStream) -> io::Result<()> {
     let mut h = String::new();
     let mut host = String::from("this-host");
     let mut body_len = 0usize;
+    let mut forwarded_ip = None;
     for _ in 0..64 {
         h.clear();
         if reader.by_ref().take(4096).read_line(&mut h)? == 0 || h.trim().is_empty() {
@@ -57,6 +60,9 @@ fn handle(shared: &Shared, stream: TcpStream) -> io::Result<()> {
         }
         if let Some(v) = h.to_ascii_lowercase().strip_prefix("content-length:") {
             body_len = v.trim().parse().unwrap_or(0);
+        }
+        if let Some(v) = h.to_ascii_lowercase().strip_prefix("x-real-ip:") {
+            forwarded_ip = v.trim().parse::<std::net::IpAddr>().ok();
         }
         if let Some(v) = h.to_ascii_lowercase().strip_prefix("host:") {
             let name = v.trim().rsplit_once(':').map(|(n, _)| n.to_string()).unwrap_or_else(|| v.trim().to_string());
@@ -68,6 +74,13 @@ fn handle(shared: &Shared, stream: TcpStream) -> io::Result<()> {
         }
     }
     let mut stream = stream;
+    let peer_ip = stream.peer_addr()?.ip();
+    // Only the faucet accepts a forwarded identity, from explicitly configured proxy peers.
+    let ip = if matches!(path.split('?').next(), Some("/api/faucet" | "/faucet")) {
+        faucet_client_ip(peer_ip, forwarded_ip, &std::env::var("REQUANT_FAUCET_TRUSTED_PROXIES").unwrap_or_default())
+    } else {
+        peer_ip
+    };
     if path.starts_with("/api/") {
         let cors = "Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
                     Access-Control-Allow-Headers: Content-Type\r\n";
@@ -79,7 +92,6 @@ fn handle(shared: &Shared, stream: TcpStream) -> io::Result<()> {
         } else {
             let mut body = vec![0u8; if method == "POST" { body_len } else { 0 }];
             reader.read_exact(&mut body)?;
-            let ip = stream.peer_addr().map(|a| a.ip()).unwrap_or(std::net::IpAddr::from([0, 0, 0, 0]));
             crate::api::answer(shared, &method, &path, &body, ip)
         };
         let body = v.to_string();
@@ -110,7 +122,6 @@ fn handle(shared: &Shared, stream: TcpStream) -> io::Result<()> {
             .filter(|c| c.is_ascii_alphanumeric())
             .take(100)
             .collect();
-        let ip = stream.peer_addr().map(|a| a.ip()).unwrap_or(std::net::IpAddr::from([0, 0, 0, 0]));
         let mut st = shared.lock().unwrap();
         let outcome = match parse_address(&st.chain.net, &to) {
             Err(_) => Err("that is not a test-network address (trq1...)".to_string()),
@@ -131,6 +142,30 @@ fn handle(shared: &Shared, stream: TcpStream) -> io::Result<()> {
         "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n{body}",
         body.len()
     )
+}
+
+fn faucet_client_ip(peer: std::net::IpAddr, forwarded: Option<std::net::IpAddr>, trusted: &str) -> std::net::IpAddr {
+    if trusted.split(',').any(|s| s.trim().parse::<std::net::IpAddr>().ok() == Some(peer)) {
+        forwarded.unwrap_or(peer)
+    } else {
+        peer
+    }
+}
+
+#[cfg(test)]
+mod faucet_proxy_tests {
+    use super::faucet_client_ip;
+
+    #[test]
+    fn forwarded_identity_requires_an_exact_trusted_peer() {
+        let proxy = "127.0.0.1".parse().unwrap();
+        let attacker = "192.0.2.2".parse().unwrap();
+        let client = "2001:db8::1".parse().unwrap();
+        assert_eq!(faucet_client_ip(attacker, Some(client), "127.0.0.1"), attacker);
+        assert_eq!(faucet_client_ip(proxy, Some(client), ""), proxy);
+        assert_eq!(faucet_client_ip(proxy, Some(client), "127.0.0.1"), client);
+        assert_eq!(faucet_client_ip(proxy, None, "127.0.0.1"), proxy);
+    }
 }
 
 /// A block is overdue after this many seconds (20 times the target spacing).

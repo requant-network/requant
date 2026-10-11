@@ -64,6 +64,30 @@ fn faucet_sends_once_a_day() {
         std::thread::sleep(Duration::from_millis(50));
     }
     let to = address(&Network::regtest(), &[7; 32]);
+    // The JSON endpoint keeps the same persistent limits, independently for separate clients.
+    let api_to = address(&Network::regtest(), &[8; 32]);
+    let other_to = address(&Network::regtest(), &[9; 32]);
+    let call = |to: &str, ip: &str| {
+        requant_node::api::answer(
+            &n.shared,
+            "POST",
+            "/api/faucet",
+            serde_json::json!({"address": to}).to_string().as_bytes(),
+            ip.parse().unwrap(),
+        )
+    };
+    let (status, sent) = call(&api_to, "192.0.2.1");
+    assert_eq!(status, "200 OK");
+    assert_eq!(sent["amount_atoms"], 100_000_000);
+    assert_eq!(sent["txid"].as_str().unwrap().len(), 64);
+    assert_eq!(call(&other_to, "192.0.2.1").0, "429 Too Many Requests", "same client, different address");
+    assert_eq!(call(&api_to, "192.0.2.2").0, "429 Too Many Requests", "same address, different client");
+    assert_eq!(call(&other_to, "192.0.2.2").0, "200 OK", "independent clients can both receive coins");
+    assert_eq!(call("not-an-address", "192.0.2.3").0, "400 Bad Request");
+    let (_, stats) = requant_node::api::answer(&n.shared, "GET", "/api/faucet", &[], "192.0.2.4".parse().unwrap());
+    assert_eq!(stats["enabled"], true);
+    assert_eq!(stats["given_today_atoms"], 200_000_000);
+    assert!(stats.get("key").is_none() && stats.get("last_ip").is_none());
     let first = post(explorer, &format!("to={to}"));
     assert!(first.contains(">sent<"), "{first}");
     let again = post(explorer, &format!("to={to}"));

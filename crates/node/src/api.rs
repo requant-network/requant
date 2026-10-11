@@ -11,6 +11,9 @@
 //! - `POST /api/tx` with the signed transaction in hex (the body, or `{"hex": ...}`): relays it; `{"txid"}`;
 //! - `POST /api/package` with `{"hex": [parent, ..., child]}`: a transaction with unconfirmed parents that
 //!   may pay below the minimum fee on their own (package relay); `{"txids"}` admitted.
+//! - `GET /api/faucet`: public testnet faucet availability, amount, balance and daily budget (atoms);
+//! - `POST /api/faucet` with `{"address": "trq1..."}`: request test coins; `{"txid", "amount_atoms"}`.
+//!   The existing persistent 24-hour address/IP limits and daily budget apply. No mainnet payouts.
 //!
 //! Answers are what this node sees: a remote wallet trusts the node for balances and history (it cannot
 //! take coins: keys never leave the wallet), and the node learns which addresses it asks about.
@@ -83,6 +86,34 @@ pub fn answer(shared: &Shared, method: &str, path: &str, body: &[u8], ip: IpAddr
     let parts: Vec<&str> = path.trim_end_matches('/').split('/').collect();
     let mut st = shared.lock().unwrap();
     match (post, parts.as_slice()) {
+        (false, ["", "api", "faucet"]) => ("200 OK", crate::faucet::status(&st)),
+        (true, ["", "api", "faucet"]) => {
+            if st.chain.net.name == "main" || st.faucet.is_none() {
+                return err("503 Service Unavailable", "this node runs no testnet faucet");
+            }
+            if body.len() > 512 {
+                return err("413 Payload Too Large", "request too large");
+            }
+            let v: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+            let Some(to) = v["address"].as_str().filter(|s| s.len() <= 90) else {
+                return err("400 Bad Request", "expected a test-network address");
+            };
+            let Ok(owner) = parse_address(&st.chain.net, to) else {
+                return err("400 Bad Request", "that is not a test-network address (trq1...)");
+            };
+            let amount = st.faucet.as_ref().unwrap().cfg.amount;
+            match crate::faucet::request(&mut st, ip, owner) {
+                Ok(id) => ("200 OK", json!({ "txid": hex(&id), "amount_atoms": amount })),
+                Err(e) => {
+                    let status = if e.starts_with("one request a day") {
+                        "429 Too Many Requests"
+                    } else {
+                        "422 Unprocessable Entity"
+                    };
+                    err(status, &e)
+                }
+            }
+        }
         (false, ["", "api", "info"]) => (
             "200 OK",
             json!({
