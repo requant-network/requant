@@ -2,9 +2,9 @@
 
 ## Status
 
-Pre-alpha. A public test network is running; its coins have no value and it may be reset. Nothing here
-has had an external audit: not the work function, the chain rules, the node, the wallet, the swap
-maker or the RequantHtlc contract. Do not use it where real funds depend on it.
+Pre-alpha. A public test network is running; its coins have no value and it may be reset. An internal security review is planned for the work function,
+the chain rules, the node, the wallet, the swap maker and the RequantHtlc contract.
+That review has not yet been completed. Do not use it where real funds depend on it.
 
 ## In scope
 

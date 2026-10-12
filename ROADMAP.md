@@ -7,7 +7,7 @@ decisions for the project owner, not engineering defaults.
 
 - [x] Second architecture: RTX 3090 (Ampere), 159.5 ns per ticket, 86.7% tensor share, parity holds
       (Abacus `tnet-ampere-v1`). Next: Ada / Hopper / Blackwell.
-- [ ] External review of `SPEC.md` and `crates/tnet`.
+- [ ] Internal security review of `SPEC.md` and `crates/tnet`.
 - [x] Coin name and repository: Requant (`requant-network/requant`, first `danifest751/requant`); ticker RQT, provisional until checked
       against exchanges and trademarks (**owner**).
 
@@ -92,7 +92,7 @@ test network.
 - [ ] The maker on future with USDT; release; the app button.
 - [ ] Litecoin, Bitcoin Cash and Dogecoin on the same HTLC; RequantHtlc on EVM chains; TON.
 - [ ] RQT↔XMR swaps: ed25519 adaptor signatures, MuSig2 key aggregation, cancel/refund/punish
-      transfers; external cryptographic review before real value.
+      transfers; internal cryptographic review before real value.
 - [ ] Confirmation-depth policy for swaps, scaled to amount and hashrate.
 - [x] MagnetGate payments ([design](https://github.com/danifest751/magnetgate/blob/main/PAYMENTS.md)): a deposit
       address per access code, credited once after 6 confirmations; the apps run the wallet CLI itself
@@ -117,7 +117,7 @@ test network.
       it may be reset when the rules change.
 - [ ] Run it for weeks: reorgs between miners, epoch changes (every 1440 blocks), restarts, attacks;
       more miners (RTX 3090).
-- [ ] Before the main network: genesis time and target, fund key, external review.
+- [ ] Before the main network: genesis time and target, fund key, internal security review.
 - [x] Before the test network started: the genesis time in `crates/consensus/src/params.rs`.
 - [ ] Security policy for consensus bugs; release signing.
 
