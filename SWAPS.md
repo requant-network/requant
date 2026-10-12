@@ -156,7 +156,7 @@ one).
 - ed25519 adaptor signatures, which need random nonces: the deterministic nonce of plain ed25519
   does not apply;
 - the swap state machine and a maker bot;
-- an external cryptographic review before real money.
+- an internal cryptographic review before real money.
 
 **Privacy.**
 - If the 2-of-2 is the consensus Multi2 condition, it is visible when spent. Swaps whose RQT side

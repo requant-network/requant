@@ -39,4 +39,4 @@ an early refund and a late claim are refused. Energy per call (the caller pays a
 
 An earlier version that stored every term took 189,603 energy per lock and 52,132 per claim.
 
-Status: tested locally and on Nile; not reviewed. No real value before an external review.
+Status: tested locally and on Nile; internal security review planned. No real value before that review is completed.
