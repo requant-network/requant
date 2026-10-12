@@ -5,22 +5,27 @@ network: the arithmetic that GPU tensor cores and AI inference accelerators are 
 is the step that makes the work hard to shortcut: exact integer **requant**ization between layers.
 The work function is called **TNet**.
 
-**Status: pre-alpha; a public test network is running** ([`TESTNET.md`](TESTNET.md), explorer
-http://pool.requant.network:19380/). The work
+**Status: pre-alpha; a public test network is running** ([`TESTNET.md`](TESTNET.md)). Website,
+documentation, explorer, pool statistics and the Web Wallet: **https://requant.network**. The work
 function (**TNet v1**) is frozen with test vectors and reference implementations; a node, a wallet and a GPU
 miner exist; there is no main network and the test coins have no value. See [`ROADMAP.md`](ROADMAP.md).
 Nothing here is a security or investment claim.
 
 ## Try the test network
 
-1. **Wallet.** Download `requant-wallet` for Windows or Linux from the
-   [latest release](https://github.com/requant-network/requant/releases/latest) and make a wallet:
+1. **Wallet.** The quickest is the [Web Wallet](https://requant.network/wallet/), or the same wallet in
+   Telegram ([@requant_wallet_bot](https://t.me/requant_wallet_bot)); desktop, Android and browser-extension
+   apps are on [requant.network/docs/wallet](https://requant.network/docs/wallet). On the command line,
+   download `requant-wallet` for Linux, Windows or Android (Termux) from the
+   [wallet release](https://github.com/requant-network/requant/releases/tag/wallet-v0.10.0) and make a wallet:
    `requant-wallet create my.wallet` shows a 24-word backup phrase (write it down) and your address
    (`trq1...`); `requant-wallet address my.wallet` prints it again with its key hash.
-2. **Test coins.** The **faucet** at http://pool.requant.network:19380/faucet sends 10 RQT to your address, once a
-   day per address. Mined more than you need? Top it up:
+2. **Test coins.** The [faucet](https://requant.network/faucet) sends 10 RQT to your address, once a day per
+   address. Or buy test RQT for signet bitcoin, Lightning or test USDT on TRON Nile with an atomic swap
+   ([guide](https://requant.network/docs/swaps)). Mined more than you need? Top the faucet up:
    `trq1q8pqnx3uqer6jcxszen4tg3hylh5q645ae23yvra62a2nu98slqaqvvyume`.
-3. **Mine.** The GPU miner is **CPPminer** (NVIDIA, RTX 20xx / Turing or newer): download
+3. **Mine.** The GPU miner is **CPPminer**: NVIDIA Turing or newer on tensor cores (CUDA), and AMD and Intel
+   GPUs over OpenCL (`--backend opencl`; Intel Arc on its XMX engines). Download
    `cppminer-win64-cuda.zip` or `cppminer-linux-x64-cuda.tar.gz` from the
    [CPPminer releases](https://github.com/danifest751/CPPminer/releases/latest), check the GPU with
    `cppminer --algo tnet --selftest`, and mine in the pool:
@@ -30,10 +35,10 @@ Nothing here is a security or investment claim.
    ```
 
    The pool pays PPLNS (1% fee) automatically from 1 RQT, 100 blocks after a block is found; your
-   devices and payouts are on the [pool page](http://pool.requant.network:19380/pool).
+   devices and payouts are on the [pool page](https://requant.network/explorer/pool).
 4. **Look around.** Blocks, transactions and any address on the
-   [explorer](http://pool.requant.network:19380/); peers and pending transactions on the
-   [network page](http://pool.requant.network:19380/network).
+   [explorer](https://requant.network/explorer); peers, pending transactions and watchman events on the
+   reference node's [network page](http://pool.requant.network:19380/network).
 5. **Send.** Without a node of your own the wallet uses the explorer's public API:
    `requant-wallet balance my.wallet --api http://pool.requant.network:19380` and
    `requant-wallet send my.wallet <address> 1.5 --api http://pool.requant.network:19380` (keys stay on your
@@ -50,7 +55,8 @@ an exact integer requantization between them. Every 256-byte piece of an output 
 ticket hashed with SHA-256. A block carries the winning ticket's `(nonce, row, piece index, piece)`,
 272 bytes. A node checks the hash, then recomputes that one row: about 11 ms on a laptop CPU.
 
-- **Miners** run int8 matrix multiplication on tensor cores (88% of an attempt on a Turing GPU).
+- **Miners** run int8 matrix multiplication on tensor cores: about 99% of an attempt in CPPminer, which
+  does the requantization inside the GEMM (88% in the research build on a Turing GPU).
   Computing fewer rows does not make a ticket cheaper.
 - **Verification** needs no proof system and no trusted setup, only SHA-256 and integer
   arithmetic, plus 512 MiB of epoch weights.
@@ -60,9 +66,11 @@ ticket hashed with SHA-256. A block carries the winning ticket's `(nonce, row, p
 Full definition: [`SPEC.md`](SPEC.md). Chain rules (draft): [`CHAIN.md`](CHAIN.md): one-minute blocks, a
 smooth emission of 2^24 RQT with a small tail, no premine, and a 6% development fund for the first four
 years that ends by itself. Transactions can lock coins under 2-of-2 keys or hash/time-locked contracts
-and carry absolute or relative time locks (CHAIN.md §4.1), the primitives for atomic swaps (Bitcoin
-family, EVM, Monero) and payment channels; the protocols themselves are not built yet
-([`SWAPS.md`](SWAPS.md)).
+and carry absolute or relative time locks (CHAIN.md §4.1–4.2), the primitives for atomic swaps and
+payment channels. Built on them: swaps with a maker for bitcoin (on chain and over Lightning) and for USDT
+on TRON (`requant-wallet swap`, `requant-maker`, the RequantHtlc contract in `contracts/`), and one-way
+payment channels (`requant-wallet channel`), used by every Requant Wallet app and by MagnetGate. Monero
+and EVM swaps and two-way channels are designed, not built ([`SWAPS.md`](SWAPS.md)).
 
 ## Quick start
 
@@ -97,7 +105,9 @@ SWAPS.md         swaps and payment channels on the consensus primitives: design,
 crates/tnet/     Rust reference: derivations, verifier (Epoch), CLI (vectors, check, bench)
 crates/consensus/ chain rules of CHAIN.md: transactions, blocks, difficulty, emission, chain state
 crates/node/     requantd: storage, peer-to-peer sync and relay, mempool, JSON-RPC, regtest miner
-crates/wallet/   requant-wallet: 24-word wallets (BIP 39, SLIP-0010), offline signing, payments through a node
+crates/wallet/   requant-wallet: 24-word wallets (BIP 39, SLIP-0010), offline signing, payments through a node,
+                 swaps and channels; requant-maker, the swap maker (BTC, Lightning, USDT on TRON)
+contracts/       RequantHtlc: the hash/time-locked contract for TRC-20/ERC-20 swaps (Solidity, Foundry tests)
 reference/       pure-Python reference written from SPEC.md
 vectors/         frozen test vectors
 miner/cuda/      GPU attempt benchmark, the starting point of the miner
