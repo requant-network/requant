@@ -2,8 +2,9 @@
 
 ## Status
 
-Pre-alpha. There is no network and no coin. The code is a reference implementation of a work
-function; do not use it where funds depend on it.
+Pre-alpha. A public test network is running; its coins have no value and it may be reset. Nothing here
+has had an external audit: not the work function, the chain rules, the node, the wallet, the swap
+maker or the RequantHtlc contract. Do not use it where real funds depend on it.
 
 ## In scope
 
@@ -11,12 +12,21 @@ function; do not use it where funds depend on it.
   on which two of them disagree is a consensus bug).
 - A **work-model break**: a way to obtain valid tickets for less than the stated `L n w`
   multiply-adds each, or to pass verification without the recomputed piece.
-- Crashes, panics or unbounded resource use in the verifier on malformed claims.
+- Crashes, panics or unbounded resource use in the verifier, the node or the pool on malformed blocks,
+  transactions, messages or RPC requests; a way to stall synchronisation or split the network.
+- **Wallet**: signing something other than intended, leaking a recovery phrase, key, passphrase or swap
+  secret, or accepting a forged parent transaction, condition or channel state.
+- **Swaps and channels**: a way for the maker, the taker or a third party to take both sides of a swap,
+  to keep a payment without delivering, or to close a channel on an old state (`SWAPS.md`,
+  `contracts/`).
+- **Releases**: a way to make a node install an update that the release key did not sign.
 
 ## How to report
 
-Open a private security advisory on this repository (`Security` -> `Report a vulnerability`). For
-non-sensitive findings a regular issue is fine. Include the affected commit, a minimal reproduction
-and the expected versus observed result.
+Open a private security advisory on this repository (`Security` -> `Report a vulnerability`), or email
+dev@requant.network with **[Security]** in the subject. For non-sensitive findings a regular issue is
+fine. Include the affected version or commit, a minimal reproduction and the expected versus observed
+result. Never send a real recovery phrase or private key.
 
-Before a network exists, work-model breaks are published as results rather than embargoed.
+On the test network, work-model breaks are published as results rather than embargoed; node, wallet and
+swap vulnerabilities are fixed in a release before they are disclosed.
