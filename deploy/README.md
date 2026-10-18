@@ -56,8 +56,12 @@ it can update every `--auto-update` node.
 - **Protocol** (`crates/node/src/msg.rs`): nodes refuse peers below `MIN_PROTOCOL`. `Hello` ignores fields it
   does not know, so new fields can be added without a break; raising `MIN_PROTOCOL` needs all nodes upgraded
   together.
-- **Consensus** (`CHAIN.md`): a rule change on the test network is a reset: new genesis time, wipe
-  `/var/lib/requant/test`, upgrade every node. On a main network it would need activation at a height.
+- **Consensus** (`CHAIN.md`): a rule change activates at a height (the table in `CHAIN.md` §2), as the
+  relative difficulty did at 8020 on the test network (node 0.18.0). Publish the release well before the
+  height and upgrade the node behind the pool first: an older node refuses blocks under the new rule. From
+  0.18.1 it no longer bans a newer peer for such a block, and bans recorded by an older version are dropped
+  when the updated node starts. A reset (new genesis time, wipe `/var/lib/requant/test`) stays possible for
+  changes that cannot be activated at a height.
 
 ## Miner
 

@@ -8,7 +8,7 @@ chain may be reset when the rules change (a reset changes the genesis time in `c
 | Work function | TNet v1 (`SPEC.md`): `n = 8192, B = 65536, L = 8, w = 256` |
 | Block time | 60 s, ASERT (half-life 2 h), starting target `2^229 - 1`; from height 8020 each block steps from its parent's target, a stall counts at most 2 h and the target is never easier than the starting one (`CHAIN.md` §7.2, node 0.18.0) |
 | P2P port | 19333 |
-| Seed nodes | `193.187.93.29:19333`, `193.32.188.248:19333`, `185.174.40.96:19333` |
+| Seed nodes | `193.187.93.29:19333`, `193.32.188.248:19333`, `185.174.40.96:19333`, `173.212.200.253:19333` |
 | Website and docs | https://requant.network |
 | Explorer | https://requant.network/explorer; the reference node's own explorer and public API: http://pool.requant.network:19380/ |
 | Mining pool | `pool.requant.network:19340` (1% fee, PPLNS, payouts from 1 RQT; stats at https://requant.network/explorer/pool) |
@@ -25,7 +25,8 @@ With the downloaded binary (or `cargo build --release` and `target/release/requa
 
 ```sh
 requantd --network test --datadir ~/requant-test --auto-update \
-  --connect 193.187.93.29:19333 --connect 193.32.188.248:19333 --connect 185.174.40.96:19333
+  --connect 193.187.93.29:19333 --connect 193.32.188.248:19333 --connect 185.174.40.96:19333 \
+  --connect 173.212.200.253:19333
 curl -s -X POST 127.0.0.1:19334 -d '{"method":"getinfo","params":[]}'
 ```
 

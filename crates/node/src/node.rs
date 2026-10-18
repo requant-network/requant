@@ -76,6 +76,28 @@ pub fn misbehaviour(why: &str) -> Option<u32> {
         _ => None,
     }
 }
+
+/// Whether a peer's agent (`requantd/x.y.z`) is a newer node than this one. A block or header such a peer
+/// sends may follow rules this node does not know yet (a hard fork), so refusing it is no proof of
+/// misbehaviour.
+fn newer_agent(agent: &str) -> bool {
+    agent
+        .strip_prefix("requantd/")
+        .and_then(crate::release::parse_version)
+        .is_some_and(|v| v > crate::release::own_version())
+}
+
+/// Messages answering this node's own requests: they arrive in bursts while it syncs, and forging them
+/// costs real work, so they do not count toward the flood limit.
+fn solicited(m: &Msg) -> bool {
+    matches!(m, Msg::Block(_) | Msg::Headers(_))
+}
+
+/// The first line of `bans.txt`: bans recorded by another version are dropped at start, because a block
+/// that version refused may be valid under this one's rules.
+fn bans_header() -> String {
+    format!("version {VERSION}")
+}
 /// Bytes served for one `GetData` request.
 const MAX_GETDATA_BYTES: usize = 32 << 20;
 /// Bytes queued for a peer that does not read them; beyond this the peer is disconnected.
@@ -435,8 +457,10 @@ impl State {
             let t = now();
             self.bans.insert(ip, t + BAN_SECS);
             self.bans.retain(|_, until| *until > t);
-            // kept across restarts: "ip until" per line
-            let text: String = self.bans.iter().map(|(ip, until)| format!("{ip} {until}\n")).collect();
+            // kept across restarts of this version: the header, then "ip until" per line
+            let text: String = std::iter::once(bans_header() + "\n")
+                .chain(self.bans.iter().map(|(ip, until)| format!("{ip} {until}\n")))
+                .collect();
             if let Err(e) = std::fs::write(&self.bans_path, text) {
                 eprintln!("bans: {e}");
             }
@@ -975,8 +999,9 @@ fn spawn_peer(shared: Shared, stream: TcpStream, outbound: bool) -> io::Result<(
             let t = std::time::Instant::now();
             tokens = (tokens + t.duration_since(last).as_secs_f64() * MSG_RATE).min(MSG_BURST);
             last = t;
-            let flood = tokens < 1.0;
-            if !flood {
+            let counted = !solicited(&m);
+            let flood = counted && tokens < 1.0;
+            if counted && !flood {
                 tokens -= 1.0;
             }
             let result = match m {
@@ -990,6 +1015,12 @@ fn spawn_peer(shared: Shared, stream: TcpStream, outbound: bool) -> io::Result<(
                 Ok(()) => None,
             };
             let Some(why) = why else { continue };
+            let newer = st.peers.get(&id).is_some_and(|p| newer_agent(&p.agent));
+            if newer && matches!(why, "invalid block" | "invalid header") {
+                let agent = &st.peers[&id].agent;
+                eprintln!("peer {addr}: disconnecting ({why} from {agent}, newer than this node: update it)");
+                break;
+            }
             let Some(points) = misbehaviour(why) else {
                 // not the peer's fault, or nothing to keep talking about
                 if why != "connected to self" {
@@ -1087,12 +1118,15 @@ pub fn supply_audit(st: &State) -> serde_json::Value {
     })
 }
 
-/// Bans still in force from `bans.txt` ("ip until" per line; a missing or bad file means none).
+/// Bans still in force from `bans.txt` (the version header, then "ip until" per line); a missing or bad
+/// file, or one written by another version, means none.
 fn load_bans(path: &std::path::Path) -> HashMap<IpAddr, u64> {
     let t = now();
-    std::fs::read_to_string(path)
-        .unwrap_or_default()
-        .lines()
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    if text.lines().next() != Some(bans_header().as_str()) {
+        return HashMap::new();
+    }
+    text.lines()
         .filter_map(|l| {
             let (ip, until) = l.split_once(' ')?;
             Some((ip.parse().ok()?, until.trim().parse().ok()?))
@@ -1497,5 +1531,35 @@ mod tests {
         // not the peer's fault: the connection just ends
         assert_eq!(misbehaviour("protocol version"), None);
         assert_eq!(misbehaviour("connected to self"), None);
+    }
+
+    #[test]
+    fn newer_peers_and_solicited_messages() {
+        let (a, b, c) = crate::release::own_version();
+        assert!(newer_agent(&format!("requantd/{a}.{b}.{}", c + 1)));
+        assert!(newer_agent(&format!("requantd/{}.0.0", a + 1)));
+        assert!(!newer_agent(&format!("requantd/{a}.{b}.{c}")));
+        assert!(!newer_agent("requantd/0.1.0"));
+        assert!(!newer_agent("othernode/99.0.0") && !newer_agent("requantd/garbage") && !newer_agent(""));
+        assert!(solicited(&Msg::Block(vec![])) && solicited(&Msg::Headers(vec![])));
+        assert!(!solicited(&Msg::GetAddr));
+    }
+
+    #[test]
+    fn bans_last_only_within_one_version() {
+        let dir = std::env::temp_dir().join(format!("requant-bans-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("bans.txt");
+        let until = now() + 600;
+        std::fs::write(&path, format!("{}\n10.1.2.3 {until}\n10.1.2.4 1\n", bans_header())).unwrap();
+        let bans = load_bans(&path);
+        assert_eq!(bans.len(), 1);
+        assert!(bans.contains_key(&"10.1.2.3".parse::<IpAddr>().unwrap()));
+        // an older node's file (no header, or another version) bans nobody after the update
+        std::fs::write(&path, format!("10.1.2.3 {until}\n")).unwrap();
+        assert!(load_bans(&path).is_empty());
+        std::fs::write(&path, format!("version 0.0.1\n10.1.2.3 {until}\n")).unwrap();
+        assert!(load_bans(&path).is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
