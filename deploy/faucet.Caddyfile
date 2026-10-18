@@ -1,0 +1,32 @@
+# Imported by the shared host's Caddyfile. Keep this outside site deployments.
+pool.requant.network {
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		-Server
+	}
+
+	@website {
+		path /api/faucet
+		method GET POST
+		remote_ip 147.90.15.89
+	}
+	handle @website {
+		# Only the website server may forward the visitor's validated address.
+		reverse_proxy 127.0.0.1:19380 {
+			header_up X-Real-IP {http.request.header.X-Real-IP}
+		}
+	}
+	@faucet {
+		path /api/faucet
+		method GET POST
+	}
+	handle @faucet {
+		reverse_proxy 127.0.0.1:19380 {
+			header_up X-Real-IP {remote_host}
+		}
+	}
+	handle {
+		respond 404
+	}
+}

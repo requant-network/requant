@@ -28,6 +28,30 @@ Check a node: `journalctl -u requantd -f`, `curl -s -X POST 127.0.0.1:19334 -d '
 A node with the explorer also answers `GET /health` (JSON; HTTP 503 when it has no peers, no block for
 20 minutes, or is still syncing), for an uptime monitor.
 
+### Faucet HTTPS on the shared host
+
+The public website calls `https://pool.requant.network/api/faucet`. The reference node's plain-HTTP
+API being healthy is not enough: the shared Caddy server must also load the pool hostname and its TLS
+certificate. Install `deploy/faucet.Caddyfile` as `/etc/caddy/services/requant-faucet.caddy`, readable by
+the `caddy` service user, and keep this top-level line in the shared host's Caddyfile **and its deployment
+template**, after the global options block:
+
+```caddyfile
+import /etc/caddy/services/*.caddy
+```
+
+Validate the combined configuration with Caddy's service environment (`/etc/caddy/fs.env` on the
+current shared host), then `systemctl reload caddy`. Do not replace other sites' configuration. The
+node trusts only loopback via `REQUANT_FAUCET_TRUSTED_PROXIES=127.0.0.1`. The proxy accepts visitor IPs
+only from the website server `147.90.15.89`; direct requests get their socket IP, ignoring spoofed
+headers. Only GET/POST on the exact faucet path reach the node; other API paths remain closed here.
+
+`python3 scripts/test_faucet_proxy.py` runs the actual Caddy binary against a local echo upstream to
+check both IP paths, spoofed headers and blocked routes, without issuing coins. After installation,
+check both `https://pool.requant.network/api/faucet` and `https://requant.network/api/faucet` for
+`enabled: true`, then check the public form. Replacing the shared Caddyfile without its service import
+removes the pool TLS route and makes the form unavailable even while the node and its balance are fine.
+
 The node watches itself and reports events (no block for 20 minutes, no peers, a reorganisation of two or
 more blocks, the network rate tripling or falling to a third within an hour, a block of the current epoch
 that no longer verifies when checked again, a failed supply audit) in the log, in `getevents`, on the
