@@ -29,6 +29,7 @@ function is `SPEC.md` (TNet v1), unchanged.
 | development fund (§8) | 6%, heights 1..2^21, key set at launch | same, `trq1qvfkg4mygtgkcthzsnjdpgqdujda8vm92cg62vas08aylluhf5gqsezeems` | 6%, heights 1..8, public test key |
 | conditions and time locks (§4.1) from height | 0 (genesis) | 1400 | 0 |
 | revocable outputs, revocable HTLCs, anyone-can-pay (§4.2) from height | 0 (genesis) | 4700 | 0 |
+| relative difficulty (§7.2) from height | 0 (genesis) | 8020 | 0 |
 
 `chain_id = H("requant/chain", name)`. Regtest exists for tests and local development; its small work
 function makes CPU mining instant. The main network's genesis target is chosen at launch from the
@@ -186,21 +187,50 @@ the remaining chain with the most work is chosen, ties going to the lowest `bloc
 `H("requant/epoch", LE64 e || block_id(e E - K))` for epoch `e >= 1`. Nodes derive the next epoch's
 weights after block `e E - K` (about 7 s on one CPU core for TNet v1).
 
-## 7. Difficulty (ASERT, anchored at genesis)
+## 7. Difficulty (ASERT)
+
+Both rules scale a base target by `2^(lag / tau)` with BCH's fixed-point step:
+
+```
+scale(base, lag):
+  exponent = trunc( lag * 65536 / tau )                                     (signed, toward zero)
+  shifts   = exponent >> 16                                                 (arithmetic, floor)
+  frac     = exponent & 0xffff
+  factor   = 65536 + ((195766423245049 frac + 971821376 frac^2 + 5127 frac^3 + 2^47) >> 48)
+  result   = (base * factor) shifted left by (shifts - 16) bits (right if negative), computed without
+             overflow; then 0 becomes 1 and anything above pow_limit becomes pow_limit
+```
+
+A positive lag makes the target larger (easier), a negative one smaller (harder): `tau` of lag doubles or
+halves it.
+
+### 7.1 Anchored at genesis (below the relative-difficulty height of §2)
 
 For the block after `parent` (BCH's aserti3-2d with the genesis block as anchor):
 
 ```
-exponent = trunc( ((parent.time - genesis.time) - T * parent.height) * 65536 / tau )   (signed, toward zero)
-shifts   = exponent >> 16                                                              (arithmetic, floor)
-frac     = exponent & 0xffff
-factor   = 65536 + ((195766423245049 frac + 971821376 frac^2 + 5127 frac^3 + 2^47) >> 48)
-target   = (genesis.target * factor) shifted left by (shifts - 16) bits (right if negative), computed
-           without overflow; then 0 becomes 1 and anything above pow_limit becomes pow_limit
+target = scale(genesis.target, (parent.time - genesis.time) - T * parent.height)
 ```
 
-The target halves (difficulty doubles) for every `tau` of lag behind schedule and doubles for every `tau`
-ahead.
+The whole lag behind the schedule stays in the formula. After a long stall the first block found at the
+old target ends it, and the blocks after it start at or near `pow_limit` until the height catches up
+with the time: on the test network a four-day stall (heights 7299 to 7300, 2026-10-18) let one GPU find
+710 blocks in 17 minutes. §7.2 replaces this rule.
+
+### 7.2 Relative (from the relative-difficulty height of §2)
+
+For the block after `parent`, whose own parent is `grandparent`:
+
+```
+solve  = parent.time - grandparent.time   (T for the block after genesis; may be negative)
+target = min( scale(parent.target, min(solve, tau) - T), genesis.target )
+```
+
+Each block moves the target by its parent's solve time, as aserti3-2d does over a run of blocks, but a
+solve time longer than `tau` counts as `tau`: a stall of any length makes the next blocks at most twice
+as easy, and the time it lasted is not paid back with a burst of blocks. The target is never easier than
+the genesis target, which is chosen as one block a minute for a single GPU (§2), so the first relative
+block after a run at `pow_limit` returns to it directly.
 
 ## 8. Emission
 

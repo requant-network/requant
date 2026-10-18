@@ -48,6 +48,10 @@ pub const TEST_CONDITIONS_HEIGHT: u64 = 1400;
 /// Height from which the test network accepts revocable outputs, revocable HTLCs and anyone-can-pay
 /// signatures (CHAIN.md §4.2; node 0.16.0).
 pub const TEST_CONTRACTS_HEIGHT: u64 = 4700;
+/// Height from which the test network's target follows the parent's target with a bounded solve time
+/// (CHAIN.md §7; node 0.18.0). Below it the genesis-anchored rule let a four-day stall turn into thousands
+/// of blocks at `pow_limit`.
+pub const TEST_RELATIVE_HEIGHT: u64 = 8020;
 
 pub fn regtest_dev_key() -> ed25519_dalek::SigningKey {
     ed25519_dalek::SigningKey::from_bytes(&[0xde; 32])
@@ -79,6 +83,9 @@ pub struct Network {
     /// First height whose blocks may use revocable outputs, revocable HTLCs and anyone-can-pay
     /// signatures (CHAIN.md §4.2). 0 on networks that have them from genesis.
     pub contracts_height: u64,
+    /// First height whose target follows the parent's target block by block (CHAIN.md §7). 0 on networks
+    /// that have it from genesis.
+    pub relative_height: u64,
     /// Cumulative work of a known good chain. Until a node's tip has this much work it is still syncing and
     /// does not apply its reorganisation limit, so a cheap chain served first cannot lock it out of the real
     /// one. Raised at releases; not a consensus rule.
@@ -112,6 +119,7 @@ impl Network {
             dev_fund_last: dev_fund.1,
             conditions_height: 0,
             contracts_height: 0,
+            relative_height: 0,
             min_chain_work: U256::ZERO,
         }
     }
@@ -126,6 +134,8 @@ impl Network {
         n.conditions_height = TEST_CONDITIONS_HEIGHT;
         // revocable outputs, revocable HTLCs and anyone-can-pay come at this height (node 0.16.0)
         n.contracts_height = TEST_CONTRACTS_HEIGHT;
+        // difficulty follows the parent's target from this height (node 0.18.0)
+        n.relative_height = TEST_RELATIVE_HEIGHT;
         n
     }
 

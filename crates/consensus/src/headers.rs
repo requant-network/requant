@@ -200,7 +200,8 @@ impl HeaderChain {
             return Err(Error::Invalid("claim piece length"));
         }
         let parent = self.entries.get(&header.prev).ok_or(Error::UnknownParent)?;
-        let (p_height, p_time) = (parent.header.height, parent.header.time);
+        let (p_height, p_time, p_target) = (parent.header.height, parent.header.time, parent.header.target);
+        let prev_time = if p_height > 0 { self.entries.get(&parent.header.prev).map(|e| e.header.time) } else { None };
         if header.height != p_height + 1 {
             return Err(Error::Invalid("height"));
         }
@@ -223,7 +224,7 @@ impl HeaderChain {
         if header.time > now + MAX_FUTURE_SECS {
             return Err(Error::Invalid("time too far in the future"));
         }
-        if header.target != next_target(&self.net, p_height, p_time) {
+        if header.target != next_target(&self.net, p_height, p_time, p_target, prev_time) {
             return Err(Error::Invalid("target"));
         }
         claim_hash_ok(&self.net, header, claim)?;

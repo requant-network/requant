@@ -591,14 +591,13 @@ impl Chain {
         if h.height != parent.height + 1 {
             return Err(Error::Invalid("height"));
         }
-        let (p_height, p_time) = (parent.height, parent.time);
         if h.time <= self.median_time_past(&h.prev) {
             return Err(Error::Invalid("time not after median time past"));
         }
         if !trusted && h.time > now + MAX_FUTURE_SECS {
             return Err(Error::Invalid("time too far in the future"));
         }
-        if h.target != next_target(&self.net, p_height, p_time) {
+        if h.target != self.target_after(&h.prev) {
             return Err(Error::Invalid("target"));
         }
         if verify != Verify::Full {
@@ -898,9 +897,16 @@ impl Chain {
             prev: *parent_id,
             tx_root: crate::block::tx_root(&all),
             time: time.max(self.median_time_past(parent_id) + 1),
-            target: next_target(&self.net, parent.height, parent.time),
+            target: self.target_after(parent_id),
         };
         Block { header, claim: Claim::empty(self.net.tnet.w), txs: all }
+    }
+
+    /// Target of the block after a known `parent` (CHAIN.md §7).
+    fn target_after(&self, parent: &Hash) -> U256 {
+        let p = &self.entries[parent];
+        let prev_time = if p.height > 0 { self.entries.get(&p.header.prev).map(|e| e.time) } else { None };
+        next_target(&self.net, p.height, p.time, p.header.target, prev_time)
     }
 }
 

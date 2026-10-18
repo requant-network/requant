@@ -6,7 +6,7 @@ chain may be reset when the rules change (a reset changes the genesis time in `c
 | | |
 |---|---|
 | Work function | TNet v1 (`SPEC.md`): `n = 8192, B = 65536, L = 8, w = 256` |
-| Block time | 60 s, ASERT (half-life 2 h), starting target `2^229 - 1` |
+| Block time | 60 s, ASERT (half-life 2 h), starting target `2^229 - 1`; from height 8020 each block steps from its parent's target, a stall counts at most 2 h and the target is never easier than the starting one (`CHAIN.md` §7.2, node 0.18.0) |
 | P2P port | 19333 |
 | Seed nodes | `193.187.93.29:19333`, `193.32.188.248:19333`, `185.174.40.96:19333` |
 | Website and docs | https://requant.network |
