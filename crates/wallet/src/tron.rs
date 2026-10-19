@@ -1,4 +1,4 @@
-//! TRON side of RQT<->TRC-20 swaps (USDT; SWAPS.md §1): keys and addresses, calls of the RequantHtlc
+//! TRON side of RQT<->TRC-20 swaps (USDT): keys and addresses, calls of the RequantHtlc
 //! contract (`contracts/src/RequantHtlc.sol`), and transactions built and signed here. The protobuf of a
 //! transaction is written by hand, so the TRON API (TronGrid or a node) is never trusted with what is
 //! signed; it only reads chain state and relays signed transactions.

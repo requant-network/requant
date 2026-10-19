@@ -1,4 +1,4 @@
-//! RQT<->BTC atomic swaps (SWAPS.md §1): a taker buys RQT with BTC from a maker. USDT on TRON follows the
+//! RQT<->BTC atomic swaps : a taker buys RQT with BTC from a maker. USDT on TRON follows the
 //! same steps with the RequantHtlc contract in place of the Bitcoin script (`check_token_offer`).
 //!
 //! 1. The taker picks a 32-byte secret and asks the maker for a swap (`swap_create`): the amount of RQT,

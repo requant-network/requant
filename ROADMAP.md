@@ -60,44 +60,22 @@ test network.
 - [x] Start-up snapshot `chainstate.bin` instead of replaying every block (node 0.12.0); transaction index.
 - [x] Spending conditions and time locks in consensus (node 0.15.0, CHAIN.md §4.1): 2-of-2, HTLC with a
       32-byte SHA-256 preimage, absolute and relative locks; test network from height 1400, main network
-      from genesis. The primitives for swaps and channels, so that they need no hard fork later.
+      from genesis. The primitives for payment channels, so that they need no hard fork later.
 - [x] Revocable outputs, revocable HTLCs and anyone-can-pay signatures (node 0.16.0, CHAIN.md §4.2): the
       templates two-way channels with a penalty and routed payments need; test network from height 4700.
 - [x] Pool policy (node 0.16.0, CHAIN.md §4.3): blocks rank packages (child pays for parent), eviction
       keeps a parent with a well-paying child, replace by fee.
 - [x] RPC token (`--rpc-token-file`; clients send `REQUANT_RPC_TOKEN`).
 
-## 2a. Swaps and channels (software on the §4.1 primitives; [SWAPS.md](SWAPS.md))
+## 2a. Payment channels
 
-- [x] Pool policy: child-pays-for-parent and replace by fee (node 0.16.0); anyone-can-pay inputs.
-- [x] Wallet commands for conditions: `condition`, `spend-condition` (every path, with its locks),
-      `cosign` for 2-of-2, `secret`, `pubkey` (wallet 0.5.0).
-- [x] Package relay (node 0.17.0, P2P protocol 5): a pre-signed parent below the minimum fee travels
-      with its child (`sendpackage`, `POST /api/package`, `requant-wallet broadcast PARENT CHILD`).
-- [ ] Two-way channels on the revocable templates; routed payments over revocable HTLCs.
-- [x] One-way payment channels in the wallet (wallet 0.7.0): `channel open/accept/fund/pay/receive/close/
-      refund/show`; the deposit is sent only after the server signed the refund.
-- [x] One-way channels in MagnetGate: the service accepts states for traffic; a wallet in the apps
-      (Windows 0.3.7, Android build 278).
-- [x] RQT<->BTC swaps with a maker (wallet 0.8.0): Bitcoin P2WSH HTLC, `swap buy/status/claim/refund`,
-      `requant-maker`; both chains tested together on regtest.
-- [x] Paying over Lightning (wallet 0.9.0): hold invoices with the taker's hash, `swap buy-ln`, LND in
-      `requant-maker`; a payment the maker does not complete goes back by itself; tested on regtest.
-- [x] The maker on the test networks (Requant testnet + Bitcoin signet, LND); a Buy RQT screen in the apps
-      (MagnetGate Windows 0.3.8, Android build 281); swaps on chain and over Lightning done live.
-- [x] USDT on TRON (wallet 0.10.0): the RequantHtlc contract (`contracts/`, Foundry tests), `swap buy-usdt/lock/
-      refund/withdraw`, TRON in `requant-maker`; a swap done end to end on the Nile testnet.
-- [x] The maker pays the taker's TRON fees (`swap_fees`): lent energy from its stake, else TRX to burn,
-      the rest returned by `swap claim`; a taker needs only the USDT.
-- [ ] The maker on future with USDT; release; the app button.
-- [ ] Litecoin, Bitcoin Cash and Dogecoin on the same HTLC; RequantHtlc on EVM chains; TON.
-- [ ] RQT↔XMR swaps: ed25519 adaptor signatures, MuSig2 key aggregation, cancel/refund/punish
-      transfers; internal cryptographic review before real value.
-- [ ] Confirmation-depth policy for swaps, scaled to amount and hashrate.
-- [x] MagnetGate payments ([design](https://github.com/danifest751/magnetgate/blob/main/PAYMENTS.md)): a deposit
-      address per access code, credited once after 6 confirmations; the apps run the wallet CLI itself
-      (bundled, on Android as a native library) instead of WASM/JNI bindings.
-- [ ] A batch payout service to service operators, generalised from the pool's payouts.
+- [x] Pool policy: child-pays-for-parent, replace by fee and anyone-can-pay inputs.
+- [x] Wallet condition commands: `condition`, `spend-condition`, `cosign`, `secret`, `pubkey`.
+- [x] Package relay: parent-first signed packages with child-pays-for-parent fees.
+- [x] One-way payment channels: reviewed funding, monotonic payment states, cooperative close and timed refund.
+- [x] One-way channel integration and per-code RQT deposit addresses for MagnetGate.
+- [ ] Further channel work: two-way channels on revocable templates and routed payments.
+- [ ] A batch payout service to service operators, generalised from pool payouts.
 
 ## 3. Miner
 

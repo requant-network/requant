@@ -93,7 +93,7 @@ htlc     = hash[32] || claim_pkh[32] || refund_pkh[32] || LE64 timeout
 - The txid omits `signature` and `signature2`; everything else (keys, locks, the HTLC, the preimage)
   is in it and so under every signature. Both keys of a 2-of-2 sign the same sighash (§4).
 - The preimage is exactly 32 bytes and `hash` its plain SHA-256, as Bitcoin-family `OP_SHA256` and
-  EVM `sha256` contracts check it: a swap cannot be broken by a preimage one chain accepts and the
+  EVM `sha256` contracts check it: a hash lock cannot be broken by a preimage one chain accepts and the
   other does not.
 - **Time locks**, checked for the block at height `h` containing the transfer, against the spent
   coin's height `c`: `h >= after_height` (absolute) and `h - c >= after_blocks` (relative). Zero
@@ -101,8 +101,8 @@ htlc     = hash[32] || claim_pkh[32] || refund_pkh[32] || LE64 timeout
   the timeout; the claim path has no time limit. A pre-signed transfer with a lock cannot enter a
   block (or a node's pool) early, and a reorganisation to a lower tip removes it from the pool again.
 - Kind-2 transfers are valid from the network's activation height (table in §2); before it, a block
-  containing one is invalid. Fixed templates only: there is no script language. Swap and channel
-  protocols built from these are software ([SWAPS.md](SWAPS.md)).
+  containing one is invalid. Fixed templates only: there is no script language. Payment-channel
+  protocols built from these are software ([PAYMENT_CHANNELS.md](PAYMENT_CHANNELS.md)).
 
 ### 4.2 Revocable outputs, revocable HTLCs and anyone-can-pay
 

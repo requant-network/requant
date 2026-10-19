@@ -1,4 +1,4 @@
-//! One-way payment channels (SWAPS.md §3): a client pays a server in many small steps from one deposit,
+//! One-way payment channels (PAYMENT_CHANNELS.md): a client pays a server in many small steps from one deposit,
 //! with two transactions on the chain.
 //!
 //! 1. The client locks a deposit under 2-of-2 (client, server) with a funding transfer it signs but does

@@ -1,4 +1,4 @@
-//! `requant-maker`: sells RQT for BTC over atomic swaps (SWAPS.md §1; protocol in `swap.rs`).
+//! `requant-maker`: sells RQT for BTC over atomic swaps (protocol in `swap.rs`).
 //!
 //! requant-maker btc-keygen FILE          a Bitcoin key for the maker's claims (hex, kept private)
 //! requant-maker btc-address FILE NETWORK the P2WPKH address of that key (a place for the BTC it claims)
