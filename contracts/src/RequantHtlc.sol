@@ -2,7 +2,7 @@
 pragma solidity 0.8.20;
 
 /// Hash time-locked contract for TRC-20 and ERC-20 tokens: the other side of a Requant HTLC swap
-/// (SWAPS.md). A lock pays `receiver` against the 32-byte SHA-256 preimage of `hash` before `timeout`
+/// A lock pays `receiver` against the 32-byte SHA-256 preimage of `hash` before `timeout`
 /// (unix seconds), and goes back to `sender` from `timeout` on. Anyone may submit the secret or ask for
 /// the refund; the tokens only ever go to the receiver or back to the sender.
 ///

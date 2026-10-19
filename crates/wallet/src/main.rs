@@ -30,7 +30,7 @@
 //!                            (PATH: both | claim | refund | owner | revoke; every coin under the condition)
 //! requant-wallet cosign      WALLET|KEYFILE PARTIAL.json      (second signature of a 2-of-2 spend)
 //!
-//! One-way payment channels (SWAPS.md §3; `channel.rs`): one deposit, many payments, two transactions.
+//! One-way payment channels (`PAYMENT_CHANNELS.md`; `channel.rs`): one deposit, many payments, two transactions.
 //! client: requant-wallet channel open WALLET|KEYFILE SERVER_PUBKEY SERVER_ADDRESS AMOUNT EXPIRY --out CH.json
 //! server: requant-wallet channel accept WALLET|KEYFILE CH.json [--min-blocks N]   (signs the refund)
 //! client: requant-wallet channel fund WALLET|KEYFILE CH.json                      (sends the deposit)
@@ -40,7 +40,7 @@
 //! client: requant-wallet channel refund CH.json                                   (from the expiry)
 //!         requant-wallet channel show CH.json
 //!
-//! Buying RQT with BTC from a maker (atomic swap, SWAPS.md §1; `swap.rs`). SWAP.json holds the secret
+//! Buying RQT with BTC from a maker (`swap.rs`). SWAP.json holds the secret
 //! and the Bitcoin refund key: keep it private until the swap is over.
 //! requant-wallet swap buy    MAKER_HOST:PORT AMOUNT WALLET|KEYFILE --out SWAP.json [--max-sats N]
 //! requant-wallet swap buy-ln MAKER_HOST:PORT AMOUNT WALLET|KEYFILE --out SWAP.json [--max-sats N]

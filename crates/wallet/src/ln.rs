@@ -1,4 +1,4 @@
-//! The Lightning side of RQT<->BTC swaps: a hold invoice with the taker's hash (SWAPS.md §1).
+//! The Lightning side of RQT<->BTC swaps: a hold invoice with the taker's hash .
 //!
 //! The maker's LND holds the taker's payment without being able to take it (only the taker knows the
 //! secret), locks the RQT, and settles the invoice with the secret the taker's Requant claim reveals; or

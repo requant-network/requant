@@ -1,8 +1,6 @@
 # Contracts
 
-> **Historical protocol reference.** New wallet swaps are paused. This contract source and test deployment are retained for research and recovery of existing locks; they do not announce an available buying service or a new deployment plan. See the [recovery guide](https://requant.network/docs/swaps).
-
-`src/RequantHtlc.sol` is the token side of an HTLC swap with Requant ([SWAPS.md](../SWAPS.md)): one
+`src/RequantHtlc.sol` implements hash/time-locked token transfers: one
 contract holds any number of locks of TRC-20 or ERC-20 tokens, each paid to its receiver against the
 32-byte SHA-256 preimage of its hash before its timeout (unix seconds), or returned to its sender from
 the timeout on. The hash is the same plain SHA-256 as the Requant and Bitcoin HTLCs, so one secret

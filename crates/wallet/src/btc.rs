@@ -1,4 +1,4 @@
-//! The Bitcoin side of RQT<->BTC atomic swaps (SWAPS.md §1): a hash/time-locked P2WSH output with the
+//! The Bitcoin side of RQT<->BTC atomic swaps : a hash/time-locked P2WSH output with the
 //! same secret as a Requant HTLC, and the two transfers that spend it.
 //!
 //! ```text

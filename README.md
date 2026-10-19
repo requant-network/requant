@@ -20,8 +20,7 @@ Nothing here is a security or investment claim.
    `requant-wallet create my.wallet` shows a 24-word backup phrase (write it down) and your address
    (`trq1...`); `requant-wallet address my.wallet` prints it again with its key hash.
 2. **Test coins.** The [faucet](https://requant.network/faucet) sends 10 RQT to your address, once a day per
-   address. Mining and ordinary transfers are other sources of test RQT. New swaps are paused; use the
-   [recovery guide](https://requant.network/docs/swaps) only for existing funded swaps. Mined more than you need? Top the faucet up:
+   address. Mining and ordinary transfers are other sources of test RQT. Mined more than you need? Top the faucet up:
    `trq1q8pqnx3uqer6jcxszen4tg3hylh5q645ae23yvra62a2nu98slqaqvvyume`.
 3. **Mine.** The GPU miner is **CPPminer**: NVIDIA Turing or newer on tensor cores (CUDA), and AMD and Intel
    GPUs over OpenCL (`--backend opencl`; Intel Arc on its XMX engines). Download
@@ -65,7 +64,7 @@ ticket hashed with SHA-256. A block carries the winning ticket's `(nonce, row, p
 Full definition: [`SPEC.md`](SPEC.md). Chain rules (draft): [`CHAIN.md`](CHAIN.md): one-minute blocks, a
 smooth emission of 2^24 RQT with a small tail, no premine, and a 6% development fund for the first four
 years that ends by itself. Transactions can lock coins under 2-of-2 keys or hash/time-locked contracts
-and carry absolute or relative time locks (CHAIN.md §4.1–4.2). One-way payment channels and controlled transaction recovery use these templates. New swaps are paused in Requant Wallet 0.5.1 and new offers are blocked by the public wallet gateway; existing recovery is retained. Additional swap markets are outside the current product roadmap ([`ROADMAP.md`](ROADMAP.md)); [`SWAPS.md`](SWAPS.md) preserves historical protocol designs and test evidence.
+and carry absolute or relative time locks (CHAIN.md §4.1–4.2). One-way payment channels and controlled transaction recovery use these templates. [`PAYMENT_CHANNELS.md`](PAYMENT_CHANNELS.md) describes channel design and tests.
 
 
 ## Quick start
@@ -97,13 +96,13 @@ for the rest.
 
 ```
 SPEC.md          TNet v1 work function (normative)
-SWAPS.md         swaps and payment channels on the consensus primitives: design, privacy, open work
+PAYMENT_CHANNELS.md  payment channels on the consensus primitives: design and open work
 crates/tnet/     Rust reference: derivations, verifier (Epoch), CLI (vectors, check, bench)
 crates/consensus/ chain rules of CHAIN.md: transactions, blocks, difficulty, emission, chain state
 crates/node/     requantd: storage, peer-to-peer sync and relay, mempool, JSON-RPC, regtest miner
 crates/wallet/   requant-wallet: 24-word wallets (BIP 39, SLIP-0010), offline signing, payments through a node,
-                 swaps and channels; requant-maker, the swap maker (BTC, Lightning, USDT on TRON)
-contracts/       RequantHtlc: the hash/time-locked contract for TRC-20/ERC-20 swaps (Solidity, Foundry tests)
+                 conditions, channels and protocol operator tools
+contracts/       RequantHtlc: the hash/time-locked contract for TRC-20/ERC-20 tokens (Solidity, Foundry tests)
 reference/       pure-Python reference written from SPEC.md
 vectors/         frozen test vectors
 miner/cuda/      GPU attempt benchmark, the starting point of the miner

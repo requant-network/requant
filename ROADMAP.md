@@ -60,29 +60,22 @@ test network.
 - [x] Start-up snapshot `chainstate.bin` instead of replaying every block (node 0.12.0); transaction index.
 - [x] Spending conditions and time locks in consensus (node 0.15.0, CHAIN.md §4.1): 2-of-2, HTLC with a
       32-byte SHA-256 preimage, absolute and relative locks; test network from height 1400, main network
-      from genesis. The primitives for swaps and channels, so that they need no hard fork later.
+      from genesis. The primitives for payment channels, so that they need no hard fork later.
 - [x] Revocable outputs, revocable HTLCs and anyone-can-pay signatures (node 0.16.0, CHAIN.md §4.2): the
       templates two-way channels with a penalty and routed payments need; test network from height 4700.
 - [x] Pool policy (node 0.16.0, CHAIN.md §4.3): blocks rank packages (child pays for parent), eviction
       keeps a parent with a well-paying child, replace by fee.
 - [x] RPC token (`--rpc-token-file`; clients send `REQUANT_RPC_TOKEN`).
 
-## 2a. Payment channels and existing swap recovery
-
-Current product decision, 2026-10-20: new swaps are paused. Requant Wallet 0.5.1 disables new offers, approvals and locks; the public wallet gateway rejects new offers from earlier clients too. Additional markets, maker expansion and RQT-to-TON/jetton conversion are outside the current roadmap. No reopening date is announced. Underlying consensus templates and historical protocol code are retained.
+## 2a. Payment channels
 
 - [x] Pool policy: child-pays-for-parent, replace by fee and anyone-can-pay inputs.
 - [x] Wallet condition commands: `condition`, `spend-condition`, `cosign`, `secret`, `pubkey`.
 - [x] Package relay: parent-first signed packages with child-pays-for-parent fees.
 - [x] One-way payment channels: reviewed funding, monotonic payment states, cooperative close and timed refund.
 - [x] One-way channel integration and per-code RQT deposit addresses for MagnetGate.
-- [x] Recovery of saved swap backups: status, claims of already funded RQT, Bitcoin Signet refunds, TRON Nile refunds and withdrawals.
 - [ ] Further channel work: two-way channels on revocable templates and routed payments.
 - [ ] A batch payout service to service operators, generalised from pool payouts.
-
-### Historical protocol evidence — not an active swap service
-
-Wallet 0.8.0/0.9.0 exercised BTC HTLCs and Lightning hold invoices on test networks. Wallet 0.10.0 exercised the TRON Nile RequantHtlc contract and fee sponsorship. Keep the original backup and keys for any funded operation; do not create a new swap or fund saved addresses/invoices. [SWAPS.md](SWAPS.md) records the protocol design and tests, not a commitment to reopen markets.
 
 ## 3. Miner
 
