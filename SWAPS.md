@@ -1,18 +1,16 @@
 # Swaps and payment channels
 
-Status: **consensus primitives, pool policy, package relay, wallet commands, one-way payment
-channels, and buying RQT from a maker with BTC (on chain or over Lightning) or with USDT on TRON; no
-other chains, Monero or two-way channel software yet.** Since
-node 0.15.0 the chain has 2-of-2 conditions, hash/time-locked contracts (HTLCs) and absolute and
+Current product status (2026-10-20): **new swaps are paused**. Requant Wallet 0.5.1 blocks new offers, approvals and locks, and the public wallet gateway rejects new offers. Existing encrypted swap recovery, status checks, funded claims, refunds and withdrawals remain supported. Payment channels and package relay remain available.
+
+This document preserves historical protocol design and low-level test/CLI examples. They are not current instructions to buy RQT or fund a new swap. Additional-chain and Monero designs below are research, outside the current product roadmap, with no reopening date. Retain saved swap files and keys until recovery is complete.
+
+Since node 0.15.0 the chain has 2-of-2 conditions, hash/time-locked contracts (HTLCs) and absolute and
 relative time locks ([CHAIN.md §4.1](CHAIN.md)); since node 0.16.0 also revocable outputs, revocable
 HTLCs and anyone-can-pay signatures ([§4.2](CHAIN.md)), and a pool that ranks packages (child pays for
 parent) and replaces by fee ([§4.3](CHAIN.md)). On the test network they are active from heights 1400
 and 4700, on the main network from genesis. `requant-wallet` describes conditions, locks coins under
 them and spends them along each path (`condition`, `spend-condition`, `cosign`), and runs one-way
-payment channels (`channel`, wallet 0.7.0) and swaps with a maker (`swap`, `requant-maker`). The other
-protocols below are built in software on top of the same primitives and **do not exist yet**: swaps
-with other chains and Monero, and two-way channels. The point of having the primitives now is that
-adding them later needs no hard fork.
+payment channels (`channel`, wallet 0.7.0). Historical swap implementations use `swap` and `requant-maker`; current product access is recovery-only. Other-chain and Monero protocols below are unimplemented research; they are not current delivery commitments. Two-way channels remain further channel work. The consensus templates are unchanged by the wallet feature pause.
 
 ## The primitives
 
@@ -44,7 +42,7 @@ Party A picks a secret `s` and publishes `H = SHA256(s)`.
 If either side stops, both refund after their timeouts. The RQT timeout must be the later one
 (`t_RQT` well after `t_other`), so that B always has time to use `s` once A reveals it.
 
-### Implemented: buying RQT with BTC from a maker (wallet 0.8.0)
+### Historical implementation: buying RQT with BTC from a maker (wallet 0.8.0)
 
 The party with the secret pays first and has the longer time lock, so here the taker (who has BTC and
 wants RQT) goes first:
@@ -70,7 +68,7 @@ needs a Bitcoin Core node and a Requant node API. `tests/test_swap_e2e.py` runs 
 (a completed swap, an underpaid and a late one refunded to the taker, one the taker never claims) with
 `BITCOIND=/path/to/bitcoind`.
 
-### Implemented: paying over Lightning (wallet 0.9.0)
+### Historical implementation: paying over Lightning (wallet 0.9.0)
 
 Lightning payments are locked by the SHA-256 of a 32-byte preimage, as Requant HTLCs are, so the same
 secret ties both sides and nothing waits for Bitcoin confirmations:
@@ -90,7 +88,7 @@ its own host and a macaroon that can add, settle and cancel invoices. `tests/tes
 runs it on regtest with two LND nodes (BITCOIND=... LND=...): a completed swap, a lock the maker
 cannot make, and an unclaimed swap.
 
-### Implemented: paying with USDT on TRON (wallet 0.10.0)
+### Historical implementation: paying with USDT on TRON (wallet 0.10.0)
 
 The token side is the RequantHtlc contract ([contracts/](contracts/README.md)): a lock pays its receiver
 against the 32-byte SHA-256 preimage of its hash before its timeout (unix seconds), and goes back to its

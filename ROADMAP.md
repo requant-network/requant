@@ -67,37 +67,22 @@ test network.
       keeps a parent with a well-paying child, replace by fee.
 - [x] RPC token (`--rpc-token-file`; clients send `REQUANT_RPC_TOKEN`).
 
-## 2a. Swaps and channels (software on the §4.1 primitives; [SWAPS.md](SWAPS.md))
+## 2a. Payment channels and existing swap recovery
 
-- [x] Pool policy: child-pays-for-parent and replace by fee (node 0.16.0); anyone-can-pay inputs.
-- [x] Wallet commands for conditions: `condition`, `spend-condition` (every path, with its locks),
-      `cosign` for 2-of-2, `secret`, `pubkey` (wallet 0.5.0).
-- [x] Package relay (node 0.17.0, P2P protocol 5): a pre-signed parent below the minimum fee travels
-      with its child (`sendpackage`, `POST /api/package`, `requant-wallet broadcast PARENT CHILD`).
-- [ ] Two-way channels on the revocable templates; routed payments over revocable HTLCs.
-- [x] One-way payment channels in the wallet (wallet 0.7.0): `channel open/accept/fund/pay/receive/close/
-      refund/show`; the deposit is sent only after the server signed the refund.
-- [x] One-way channels in MagnetGate: the service accepts states for traffic; a wallet in the apps
-      (Windows 0.3.7, Android build 278).
-- [x] RQT<->BTC swaps with a maker (wallet 0.8.0): Bitcoin P2WSH HTLC, `swap buy/status/claim/refund`,
-      `requant-maker`; both chains tested together on regtest.
-- [x] Paying over Lightning (wallet 0.9.0): hold invoices with the taker's hash, `swap buy-ln`, LND in
-      `requant-maker`; a payment the maker does not complete goes back by itself; tested on regtest.
-- [x] The maker on the test networks (Requant testnet + Bitcoin signet, LND); a Buy RQT screen in the apps
-      (MagnetGate Windows 0.3.8, Android build 281); swaps on chain and over Lightning done live.
-- [x] USDT on TRON (wallet 0.10.0): the RequantHtlc contract (`contracts/`, Foundry tests), `swap buy-usdt/lock/
-      refund/withdraw`, TRON in `requant-maker`; a swap done end to end on the Nile testnet.
-- [x] The maker pays the taker's TRON fees (`swap_fees`): lent energy from its stake, else TRX to burn,
-      the rest returned by `swap claim`; a taker needs only the USDT.
-- [ ] The maker on future with USDT; release; the app button.
-- [ ] Litecoin, Bitcoin Cash and Dogecoin on the same HTLC; RequantHtlc on EVM chains; TON.
-- [ ] RQT↔XMR swaps: ed25519 adaptor signatures, MuSig2 key aggregation, cancel/refund/punish
-      transfers; internal cryptographic review before real value.
-- [ ] Confirmation-depth policy for swaps, scaled to amount and hashrate.
-- [x] MagnetGate payments ([design](https://github.com/danifest751/magnetgate/blob/main/PAYMENTS.md)): a deposit
-      address per access code, credited once after 6 confirmations; the apps run the wallet CLI itself
-      (bundled, on Android as a native library) instead of WASM/JNI bindings.
-- [ ] A batch payout service to service operators, generalised from the pool's payouts.
+Current product decision, 2026-10-20: new swaps are paused. Requant Wallet 0.5.1 disables new offers, approvals and locks; the public wallet gateway rejects new offers from earlier clients too. Additional markets, maker expansion and RQT-to-TON/jetton conversion are outside the current roadmap. No reopening date is announced. Underlying consensus templates and historical protocol code are retained.
+
+- [x] Pool policy: child-pays-for-parent, replace by fee and anyone-can-pay inputs.
+- [x] Wallet condition commands: `condition`, `spend-condition`, `cosign`, `secret`, `pubkey`.
+- [x] Package relay: parent-first signed packages with child-pays-for-parent fees.
+- [x] One-way payment channels: reviewed funding, monotonic payment states, cooperative close and timed refund.
+- [x] One-way channel integration and per-code RQT deposit addresses for MagnetGate.
+- [x] Recovery of saved swap backups: status, claims of already funded RQT, Bitcoin Signet refunds, TRON Nile refunds and withdrawals.
+- [ ] Further channel work: two-way channels on revocable templates and routed payments.
+- [ ] A batch payout service to service operators, generalised from pool payouts.
+
+### Historical protocol evidence — not an active swap service
+
+Wallet 0.8.0/0.9.0 exercised BTC HTLCs and Lightning hold invoices on test networks. Wallet 0.10.0 exercised the TRON Nile RequantHtlc contract and fee sponsorship. Keep the original backup and keys for any funded operation; do not create a new swap or fund saved addresses/invoices. [SWAPS.md](SWAPS.md) records the protocol design and tests, not a commitment to reopen markets.
 
 ## 3. Miner
 

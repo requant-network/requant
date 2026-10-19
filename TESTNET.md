@@ -13,9 +13,9 @@ chain may be reset when the rules change (a reset changes the genesis time in `c
 | Explorer | https://requant.network/explorer; the reference node's own explorer and public API: http://pool.requant.network:19380/ |
 | Mining pool | `pool.requant.network:19340` (1% fee, PPLNS, payouts from 1 RQT; stats at https://requant.network/explorer/pool) |
 | Faucet | https://requant.network/faucet (10 RQT a day per address); top it up at `trq1q8pqnx3uqer6jcxszen4tg3hylh5q645ae23yvra62a2nu98slqaqvvyume` |
-| Swap maker | `pool.requant.network:19390`: RQT for signet BTC, Lightning and Nile test USDT ([guide](https://requant.network/docs/swaps)) |
+| Existing swap recovery | New offers paused; retain saved backups for status, claims and refunds ([recovery guide](https://requant.network/docs/swaps)) |
 | Node | `requantd` for Linux and Windows: [releases](https://github.com/requant-network/requant/releases/latest) |
-| Wallets | [Web Wallet](https://requant.network/wallet/), apps and Telegram ([wallets](https://requant.network/docs/wallet)); `requant-wallet` 0.10.0 for Linux, Windows and Android: [wallet release](https://github.com/requant-network/requant/releases/tag/wallet-v0.10.0) |
+| Wallets | [Web Wallet](https://requant.network/wallet/), desktop, Android and extension apps ([wallets](https://requant.network/docs/wallet)); `requant-wallet` 0.10.0 for Linux, Windows and Android: [wallet release](https://github.com/requant-network/requant/releases/tag/wallet-v0.10.0) |
 | GPU miner | CPPminer `--algo tnet` (NVIDIA CUDA; AMD and Intel with `--backend opencl`): [releases](https://github.com/danifest751/CPPminer/releases/latest) |
 | Development fund | `trq1qvfkg4mygtgkcthzsnjdpgqdujda8vm92cg62vas08aylluhf5gqsezeems` (6%, `CHAIN.md` §8) |
 
@@ -199,7 +199,7 @@ Spending conditions and time locks (CHAIN.md §4.1) are active from height 1400;
 reject blocks that use them. Revocable outputs, revocable HTLCs and anyone-can-pay signatures (§4.2)
 are active from height **4700**: nodes older than 0.16.0 leave the network at the first block that uses
 them, so upgrade before then. RPC `conditionaddress` gives the address of any condition; the wallet
-locks and spends them (below), and swaps and one-way channels run on them ([SWAPS.md](SWAPS.md)).
+locks and spends them (below). One-way channels and existing swap recovery use these templates; new swaps are paused ([SWAPS.md](SWAPS.md)).
 From node 0.17.0 a transaction that pays no fee is relayed together with a child that pays for both
 (RPC `sendpackage`, `POST /api/package`).
 Upgrading nodes: `deploy/README.md`.

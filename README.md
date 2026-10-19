@@ -13,16 +13,15 @@ Nothing here is a security or investment claim.
 
 ## Try the test network
 
-1. **Wallet.** The quickest is the [Web Wallet](https://requant.network/wallet/), or the same wallet in
-   Telegram ([@requant_wallet_bot](https://t.me/requant_wallet_bot)); desktop, Android and browser-extension
+1. **Wallet.** The quickest is the [Web Wallet](https://requant.network/wallet/); desktop, Android and browser-extension
    apps are on [requant.network/docs/wallet](https://requant.network/docs/wallet). On the command line,
    download `requant-wallet` for Linux, Windows or Android (Termux) from the
    [wallet release](https://github.com/requant-network/requant/releases/tag/wallet-v0.10.0) and make a wallet:
    `requant-wallet create my.wallet` shows a 24-word backup phrase (write it down) and your address
    (`trq1...`); `requant-wallet address my.wallet` prints it again with its key hash.
 2. **Test coins.** The [faucet](https://requant.network/faucet) sends 10 RQT to your address, once a day per
-   address. Or buy test RQT for signet bitcoin, Lightning or test USDT on TRON Nile with an atomic swap
-   ([guide](https://requant.network/docs/swaps)). Mined more than you need? Top the faucet up:
+   address. Mining and ordinary transfers are other sources of test RQT. New swaps are paused; use the
+   [recovery guide](https://requant.network/docs/swaps) only for existing funded swaps. Mined more than you need? Top the faucet up:
    `trq1q8pqnx3uqer6jcxszen4tg3hylh5q645ae23yvra62a2nu98slqaqvvyume`.
 3. **Mine.** The GPU miner is **CPPminer**: NVIDIA Turing or newer on tensor cores (CUDA), and AMD and Intel
    GPUs over OpenCL (`--backend opencl`; Intel Arc on its XMX engines). Download
@@ -66,11 +65,8 @@ ticket hashed with SHA-256. A block carries the winning ticket's `(nonce, row, p
 Full definition: [`SPEC.md`](SPEC.md). Chain rules (draft): [`CHAIN.md`](CHAIN.md): one-minute blocks, a
 smooth emission of 2^24 RQT with a small tail, no premine, and a 6% development fund for the first four
 years that ends by itself. Transactions can lock coins under 2-of-2 keys or hash/time-locked contracts
-and carry absolute or relative time locks (CHAIN.md §4.1–4.2), the primitives for atomic swaps and
-payment channels. Built on them: swaps with a maker for bitcoin (on chain and over Lightning) and for USDT
-on TRON (`requant-wallet swap`, `requant-maker`, the RequantHtlc contract in `contracts/`), and one-way
-payment channels (`requant-wallet channel`), used by every Requant Wallet app and by MagnetGate. Monero
-and EVM swaps and two-way channels are designed, not built ([`SWAPS.md`](SWAPS.md)).
+and carry absolute or relative time locks (CHAIN.md §4.1–4.2). One-way payment channels and controlled transaction recovery use these templates. New swaps are paused in Requant Wallet 0.5.1 and new offers are blocked by the public wallet gateway; existing recovery is retained. Additional swap markets are outside the current product roadmap ([`ROADMAP.md`](ROADMAP.md)); [`SWAPS.md`](SWAPS.md) preserves historical protocol designs and test evidence.
+
 
 ## Quick start
 
