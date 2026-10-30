@@ -73,7 +73,6 @@ test network.
 - [x] Wallet condition commands: `condition`, `spend-condition`, `cosign`, `secret`, `pubkey`.
 - [x] Package relay: parent-first signed packages with child-pays-for-parent fees.
 - [x] One-way payment channels: reviewed funding, monotonic payment states, cooperative close and timed refund.
-- [x] One-way channel integration and per-code RQT deposit addresses for MagnetGate.
 - [ ] Further channel work: two-way channels on revocable templates and routed payments.
 - [ ] A batch payout service to service operators, generalised from pool payouts.
 

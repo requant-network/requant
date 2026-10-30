@@ -246,7 +246,7 @@ fn kind_2_waits_for_the_activation_height() {
     assert_eq!(extend(&mut chain, vec![tx]), Ok(Accepted::NewTip));
 }
 
-/// A one-way channel (MagnetGate paying for traffic): the client locks coins under 2-of-2 with the
+/// A one-way channel (a client paying a service for traffic): the client locks coins under 2-of-2 with the
 /// server, the server signs a refund to the client that waits for an expiry height, the client signs
 /// ever larger payments to the server, and the server publishes the last one before the expiry.
 #[test]

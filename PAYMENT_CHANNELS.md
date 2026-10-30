@@ -24,7 +24,7 @@ A locked coin pays a hash like any address, so locking is an ordinary transfer. 
 reveals the condition. Txids exclude signatures, so a transfer can be signed by both parties before
 its parent is even confirmed, and its reference stays valid. Every protocol below depends on this.
 
-## Payment channels (MagnetGate)
+## One-way payment channels
 
 Paying for traffic is one-way, client to server, and needs only 2-of-2 and an absolute lock:
 
