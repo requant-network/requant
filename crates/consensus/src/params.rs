@@ -128,8 +128,9 @@ impl Network {
         let mut n =
             Self::make("test", tnet::V1, (1440, 60), 248, TEST_GENESIS_TIME, 100, (TEST_DEV_FUND, DEV_FUND_LAST));
         n.genesis_target = U256::low_mask(TEST_GENESIS_TARGET_BITS);
-        // chainwork of the test network at height 355 (2026-10-10)
-        n.min_chain_work = U256([0x12_2219_6194, 0, 0, 0]);
+        // chainwork of the test network at height 11046 (2026-11-04); refresh it with every release so a
+        // fresh node cannot be held on a cheap branch longer than the reorg limit
+        n.min_chain_work = U256([0x2ee_d8da_09d4, 0, 0, 0]);
         // conditions and time locks came to the running test network at this height (node 0.15.0)
         n.conditions_height = TEST_CONDITIONS_HEIGHT;
         // revocable outputs, revocable HTLCs and anyone-can-pay come at this height (node 0.16.0)
