@@ -58,6 +58,26 @@ fn rpc_formats_methods_long_poll_and_cookie() {
 
     // the cookie is required
     assert_eq!(post(rpc, None, r#"{"method":"getinfo"}"#).0, 401);
+    // a web page in a browser on this machine never reaches it, even with the cookie
+    {
+        let body = r#"{"method":"getinfo"}"#;
+        let mut s = TcpStream::connect(rpc).unwrap();
+        write!(
+            s,
+            "POST / HTTP/1.1
+Host: x
+Origin: http://evil.example
+Authorization: Bearer {cookie}
+Content-Length: {}
+
+{body}",
+            body.len()
+        )
+        .unwrap();
+        let mut resp = String::new();
+        s.read_to_string(&mut resp).unwrap();
+        assert!(resp.starts_with("HTTP/1.1 403"), "{resp}");
+    }
     assert_eq!(post(rpc, Some("wrong"), r#"{"method":"getinfo"}"#).0, 401);
     // the older form is answered as before
     let (code, v) = post(rpc, t, r#"{"method":"getblockhash","params":[0]}"#);
@@ -143,5 +163,36 @@ fn rpc_formats_methods_long_poll_and_cookie() {
     h.shutdown();
     assert!(!cookie_path.exists(), "the cookie is removed at shutdown");
     drop(h);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_rpc_open_to_other_machines_needs_a_token() {
+    let dir = std::env::temp_dir().join(format!("requant-rpc-open-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let started = start(Config {
+        net: Network::regtest(),
+        datadir: dir.clone(),
+        listen: "127.0.0.1:0".parse().unwrap(),
+        rpc: Some("0.0.0.0:0".parse().unwrap()),
+        connect: vec![],
+        mine_to: None,
+        mine_interval: Duration::from_millis(200),
+        threads: 1,
+        max_reorg: 100,
+        rpc_token: None,
+        rpc_cookie: false,
+        peer_interval: Duration::from_millis(200),
+        discover: false,
+        explorer: None,
+        pool: None,
+        auto_update: false,
+        release_key: requant_node::release::RELEASE_KEY,
+        notify: Default::default(),
+        max_upload: None,
+        faucet: None,
+    });
+    let error = started.err().expect("refused without a token").to_string();
+    assert!(error.contains("--rpc-token-file"), "{error}");
     let _ = std::fs::remove_dir_all(&dir);
 }

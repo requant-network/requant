@@ -613,6 +613,7 @@ name = "requant-node"
 version = "0.18.2"
 dependencies = [
  "ed25519-dalek",
+ "getrandom",
  "requant-consensus",
  "serde_json",
  "tnet",

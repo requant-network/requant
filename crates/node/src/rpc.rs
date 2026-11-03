@@ -161,7 +161,7 @@ fn handle(stream: TcpStream, tokens: &[String], max_body: usize, handler: &Handl
     stream.set_read_timeout(Some(std::time::Duration::from_secs(30)))?;
     CLIENT.with(|c| c.set(stream.peer_addr().ok().map(|a| a.ip())));
     let mut reader = BufReader::new(stream.try_clone()?);
-    let (mut len, mut auth) = (0usize, None::<String>);
+    let (mut len, mut auth, mut origin) = (0usize, None::<String>, false);
     let mut line = String::new();
     // the header is bounded in lines, line length and time, so a slow or endless one cannot hold a slot
     let started = std::time::Instant::now();
@@ -182,9 +182,19 @@ fn handle(stream: TcpStream, tokens: &[String], max_body: usize, handler: &Handl
         if let Some(v) = lower.strip_prefix("content-length:") {
             len = v.trim().parse().unwrap_or(0);
         }
+        // browsers send Origin with every POST (cross-site, and same-site after DNS rebinding); RPC
+        // clients do not: a page in a browser on this machine must not reach the node
+        if lower.starts_with("origin:") {
+            origin = true;
+        }
         if lower.starts_with("authorization:") {
             auth = l["authorization:".len()..].trim().strip_prefix("Bearer ").map(|s| s.trim().to_string());
         }
+    }
+    if origin {
+        let body =
+            json!({"jsonrpc": "2.0", "id": null, "result": null, "error": "requests from web pages are refused"});
+        return respond(stream, "403 Forbidden", Some(&body));
     }
     if !tokens.is_empty() && !auth.as_deref().is_some_and(|a| tokens.iter().any(|t| same(a, t))) {
         // HTTP 401, with a body either kind of client reads

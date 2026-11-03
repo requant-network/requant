@@ -6,6 +6,7 @@ license = "Apache-2.0"
 description = "Requant full node: storage, peer-to-peer sync and relay, mempool, JSON-RPC, regtest CPU miner."
 
 [dependencies]
+getrandom = "=0.2.15"
 tnet = { path = "../tnet" }
 requant-consensus = { path = "../consensus" }
 serde_json = "=1.0.140"

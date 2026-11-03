@@ -1306,9 +1306,17 @@ pub fn start(cfg: Config) -> io::Result<Handle> {
         Some(a) => {
             let mut tokens: Vec<String> = cfg.rpc_token.iter().cloned().collect();
             if let Some(p) = &cookie {
-                let t: String = (0..4).map(|_| format!("{:016x}", random_u64())).collect();
+                let mut bytes = [0u8; 32];
+                getrandom::getrandom(&mut bytes).map_err(|e| io::Error::other(e.to_string()))?;
+                let t = crate::rpc::hex(&bytes);
                 write_private(p, &t)?;
                 tokens.push(t);
+            }
+            // the RPC can stop the node and spend the pool's and faucet's coins: off this machine only with a token
+            if !a.ip().is_loopback() && tokens.is_empty() {
+                return Err(io::Error::other(format!(
+                    "--rpc {a} is reachable from other machines: give --rpc-token-file or --rpc-cookie"
+                )));
             }
             Some(crate::rpc::serve(shared.clone(), a, tokens)?)
         }
