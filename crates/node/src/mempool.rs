@@ -407,11 +407,15 @@ impl Mempool {
             return Ok(Vec::new());
         }
         let mut replaced: Vec<Hash> = Vec::new();
+        let mut seen: HashSet<Hash> = HashSet::new();
         for c in conflicts {
-            for d in self.descendants(c) {
-                if !replaced.contains(&d) {
+            for d in self.descendants_upto(c, MAX_REPLACED) {
+                if seen.insert(d) {
                     replaced.push(d);
                 }
+            }
+            if replaced.len() > MAX_REPLACED {
+                break;
             }
         }
         if replaced.len() > MAX_REPLACED {
@@ -433,17 +437,23 @@ impl Mempool {
 
     /// Pooled transactions that spend `txid`'s outputs, directly or further down.
     fn descendants(&self, txid: &Hash) -> Vec<Hash> {
+        self.descendants_upto(txid, usize::MAX)
+    }
+
+    /// `txid` and its pooled descendants, in breadth order, stopping once there are more than `limit`: one
+    /// pass over the pool for the child map, each transaction visited once (a scan of the pool per
+    /// transaction let a large family make every conflicting transfer cost seconds).
+    fn descendants_upto(&self, txid: &Hash, limit: usize) -> Vec<Hash> {
+        let children = self.children();
         let mut out = vec![*txid];
+        let mut seen: HashSet<Hash> = out.iter().copied().collect();
         let mut k = 0;
-        while k < out.len() {
-            let cur = out[k];
-            let next: Vec<Hash> = self
-                .txs
-                .iter()
-                .filter(|(id, e)| e.parents.contains(&cur) && !out.contains(id))
-                .map(|(id, _)| *id)
-                .collect();
-            out.extend(next);
+        while k < out.len() && out.len() <= limit {
+            for c in children.get(&out[k]).into_iter().flatten() {
+                if seen.insert(*c) {
+                    out.push(*c);
+                }
+            }
             k += 1;
         }
         out
