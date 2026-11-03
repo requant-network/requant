@@ -41,6 +41,8 @@ pub const MAX_ORPHANS_PER_PEER: usize = 64;
 pub const MAX_ORPHAN_AHEAD: u64 = 4096;
 /// Inbound connections accepted from one IP address (not applied to loopback on regtest).
 pub const MAX_INBOUND_PER_IP: usize = 4;
+/// Inbound peers from one network (an IPv4 /16, an IPv6 /32): a few cheap addresses must not fill the slots.
+pub const MAX_INBOUND_PER_NET: usize = 8;
 const MAX_TEMPLATES: usize = 16;
 /// A peer silent for this long is dropped (pings go out every `PING_EVERY`).
 const IDLE_TIMEOUT: Duration = Duration::from_secs(600);
@@ -102,6 +104,9 @@ fn bans_header() -> String {
 const MAX_GETDATA_BYTES: usize = 32 << 20;
 /// Bytes queued for a peer that does not read them; beyond this the peer is disconnected.
 const MAX_PEER_QUEUE: usize = 64 << 20;
+/// Bytes queued for all peers together: past this a `GetData` waits to be asked again, so peers that
+/// ask for blocks and never read them cannot take the node's memory (32 of them could queue 2 GiB).
+const MAX_TOTAL_QUEUE: usize = 256 << 20;
 /// A write to a peer blocked this long ends the connection.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -851,6 +856,10 @@ impl State {
                 let mut seen = HashSet::new();
                 let mut sent = 0usize;
                 let mut served = 0u64;
+                let queued: usize = self.peers.values().map(|p| p.queued.load(Ordering::Relaxed)).sum();
+                if queued >= MAX_TOTAL_QUEUE {
+                    return Ok(());
+                }
                 for id in ids {
                     if sent >= MAX_GETDATA_BYTES || !seen.insert(id) {
                         continue;
@@ -938,6 +947,23 @@ fn magic(net: &Network) -> [u8; 4] {
     net.chain_id[..4].try_into().unwrap()
 }
 
+/// The network an address belongs to for the inbound limits: an IPv4 /16 or an IPv6 /32.
+fn net_of(ip: &std::net::IpAddr) -> [u8; 4] {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            let o = v4.octets();
+            [4, o[0], o[1], 0]
+        }
+        std::net::IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => net_of(&std::net::IpAddr::V4(v4)),
+            None => {
+                let o = v6.octets();
+                [o[0], o[1], o[2], o[3]]
+            }
+        },
+    }
+}
+
 /// Register a connected peer and run its reader loop on a new thread.
 fn spawn_peer(shared: Shared, stream: TcpStream, outbound: bool) -> io::Result<()> {
     let addr = stream.peer_addr()?;
@@ -949,8 +975,15 @@ fn spawn_peer(shared: Shared, stream: TcpStream, outbound: bool) -> io::Result<(
     let (id, hello, magic) = {
         let mut st = shared.lock().unwrap();
         let same_ip = st.peers.values().filter(|p| !p.outbound && p.addr.ip() == addr.ip()).count();
-        let per_ip_full = !outbound && same_ip >= MAX_INBOUND_PER_IP && !(st.allow_local && addr.ip().is_loopback());
-        if st.peers.len() >= MAX_PEERS || st.banned(&addr.ip()) || per_ip_full {
+        let local = st.allow_local && addr.ip().is_loopback();
+        let per_ip_full = !outbound && same_ip >= MAX_INBOUND_PER_IP && !local;
+        // inbound peers never take the slots the node dials out with, nor all come from one network: an
+        // attacker holding every slot would decide which blocks the node sees
+        let inbound = st.peers.values().filter(|p| !p.outbound).count();
+        let same_net = st.peers.values().filter(|p| !p.outbound && net_of(&p.addr.ip()) == net_of(&addr.ip())).count();
+        let inbound_full =
+            !outbound && !local && (inbound >= MAX_PEERS - TARGET_OUTBOUND || same_net >= MAX_INBOUND_PER_NET);
+        if st.peers.len() >= MAX_PEERS || st.banned(&addr.ip()) || per_ip_full || inbound_full {
             let _ = stream.shutdown(std::net::Shutdown::Both);
             return Ok(());
         }
@@ -1561,5 +1594,15 @@ mod tests {
         std::fs::write(&path, format!("version 0.0.1\n10.1.2.3 {until}\n")).unwrap();
         assert!(load_bans(&path).is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn inbound_limits_count_networks() {
+        let ip = |s: &str| s.parse::<std::net::IpAddr>().unwrap();
+        assert_eq!(net_of(&ip("203.0.113.7")), net_of(&ip("203.0.250.1")));
+        assert_ne!(net_of(&ip("203.0.113.7")), net_of(&ip("203.1.113.7")));
+        assert_eq!(net_of(&ip("::ffff:203.0.113.7")), net_of(&ip("203.0.1.1")));
+        assert_eq!(net_of(&ip("2001:db8:1::1")), net_of(&ip("2001:db8:ffff::1")));
+        assert_ne!(net_of(&ip("2001:db8::1")), net_of(&ip("2001:db9::1")));
     }
 }
