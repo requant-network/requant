@@ -100,6 +100,10 @@ fn solicited(m: &Msg) -> bool {
 fn bans_header() -> String {
     format!("version {VERSION}")
 }
+/// Transactions a peer may send a minute that the node refuses for other reasons than a bad signature.
+const MAX_REFUSED_TXS_PER_MINUTE: u32 = 200;
+/// Invalid blocks or headers forgiven an hour per address to a peer that says it runs a newer version.
+const NEWER_FORGIVEN_PER_HOUR: u32 = 3;
 /// `GetHeaders` a peer gets answered per `HEADER_ASK_WINDOW` seconds.
 const MAX_HEADER_ASKS: u32 = 10;
 const HEADER_ASK_WINDOW: u64 = 10;
@@ -191,6 +195,8 @@ pub struct Peer {
     pub score: u32,
     /// `GetHeaders` answered in the current window: (window start in seconds, count).
     header_asks: (u64, u32),
+    /// Transactions refused for other reasons than a bad signature, this minute: (minute start, count).
+    refused_txs: (u64, u32),
 }
 
 impl Peer {
@@ -218,6 +224,9 @@ pub struct State {
     pub chain: Chain,
     /// Verified headers, ahead of `chain` while syncing.
     pub headers: HeaderChain,
+    /// Per address: invalid blocks or headers forgiven because the peer said it is a newer node, in the
+    /// current hour (window start, count).
+    newer_forgiven: HashMap<std::net::IpAddr, (u64, u32)>,
     /// Block downloads in flight: block id -> (peer, request time).
     inflight: HashMap<Hash, (u64, u64)>,
     pub mempool: Mempool,
@@ -923,7 +932,22 @@ impl State {
                     Err(Error::Invalid("bad signature")) | Err(Error::Invalid("bad public key")) => {
                         return Err("invalid transaction")
                     }
-                    _ => {}
+                    // a refusal for anything else is cheap to cause and costs the node a check: past a
+                    // relay's worth a minute it counts as an invalid transaction
+                    Err(_) => {
+                        if let Some(p) = self.peers.get_mut(&peer) {
+                            let at = now();
+                            if at >= p.refused_txs.0 + 60 {
+                                p.refused_txs = (at, 0);
+                            }
+                            p.refused_txs.1 += 1;
+                            if p.refused_txs.1 > MAX_REFUSED_TXS_PER_MINUTE {
+                                p.refused_txs = (at, 0);
+                                return Err("invalid transaction");
+                            }
+                        }
+                    }
+                    Ok(_) => {}
                 }
             }
             Msg::Package(list) => {
@@ -1020,6 +1044,7 @@ fn spawn_peer(shared: Shared, stream: TcpStream, outbound: bool) -> io::Result<(
             inflight: 0,
             score: 0,
             header_asks: (0, 0),
+            refused_txs: (0, 0),
         };
         st.peers.insert(id, peer);
         (id, st.hello(), magic(&st.chain.net))
@@ -1071,7 +1096,17 @@ fn spawn_peer(shared: Shared, stream: TcpStream, outbound: bool) -> io::Result<(
             };
             let Some(why) = why else { continue };
             let newer = st.peers.get(&id).is_some_and(|p| newer_agent(&p.agent));
-            if newer && matches!(why, "invalid block" | "invalid header") {
+            // a newer version is the peer's own claim: it is believed a few times an hour per address
+            let forgiven = newer && matches!(why, "invalid block" | "invalid header") && {
+                let at = now();
+                let e = st.newer_forgiven.entry(addr.ip()).or_insert((at, 0));
+                if at >= e.0 + 3600 {
+                    *e = (at, 0);
+                }
+                e.1 += 1;
+                e.1 <= NEWER_FORGIVEN_PER_HOUR
+            };
+            if forgiven {
                 let agent = &st.peers[&id].agent;
                 eprintln!("peer {addr}: disconnecting ({why} from {agent}, newer than this node: update it)");
                 break;
@@ -1093,8 +1128,6 @@ fn spawn_peer(shared: Shared, stream: TcpStream, outbound: bool) -> io::Result<(
     Ok(())
 }
 
-/// A `Headers` message: each header's context is checked under the lock, its work claim (the expensive
-/// part, ~20 ms for TNet v1) is verified without it, then it is inserted. Continues the download.
 /// A block whose epoch weights are not cached (a fork from the previous epoch): derive them here, off the
 /// node's lock, before the block is checked under it; otherwise the chain would derive them while holding
 /// the lock (7 s and 512 MiB for TNet v1). Only for a known parent and a ticket that meets the target, so
@@ -1117,6 +1150,8 @@ fn prepare_block_epoch(shared: &Shared, bytes: &[u8]) {
     epoch_for(shared, &seed, &[current]);
 }
 
+/// A `Headers` message: each header's context is checked under the lock, its work claim (the expensive
+/// part, ~20 ms for TNet v1) is verified without it, then it is inserted. Continues the download.
 fn handle_headers(shared: &Shared, peer: u64, bytes: &[u8]) -> Result<(), &'static str> {
     let net = shared.lock().unwrap().chain.net.clone();
     let mut r = Reader::new(bytes);
@@ -1284,6 +1319,7 @@ pub fn start(cfg: Config) -> io::Result<Handle> {
     let mut state = State {
         chain,
         headers,
+        newer_forgiven: HashMap::new(),
         inflight: HashMap::new(),
         mempool: Mempool::default(),
         index,
