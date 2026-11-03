@@ -547,7 +547,11 @@ impl State {
                 Err(Error::UnknownParent) => {
                     // an orphan costs memory: only with a claim that meets its own (bounded) target
                     let net = &self.chain.net;
-                    if b.header.target > net.pow_limit || claim_hash_ok(net, &b.header, &b.claim).is_err() {
+                    // the ceiling that holds at the block's height: from relative difficulty on, the genesis
+                    // target (2^8 times stricter on the test network than the network's limit)
+                    let ceiling =
+                        if b.header.height >= net.relative_height { net.genesis_target } else { net.pow_limit };
+                    if b.header.target > ceiling || claim_hash_ok(net, &b.header, &b.claim).is_err() {
                         if first.is_none() {
                             return Err(Error::Invalid("orphan without work"));
                         }
@@ -654,6 +658,10 @@ impl State {
     /// Keep an orphan within the count, byte, per-peer and height limits (oldest-first eviction is not
     /// tracked; an arbitrary orphan of the same peer, or any orphan, makes room).
     fn add_orphan(&mut self, id: Hash, b: Block, size: usize, from: Option<u64>) {
+        // one held already: sent again it would count its size twice and hold one entry
+        if self.orphans.contains_key(&id) {
+            return;
+        }
         if b.header.height > self.chain.height() + MAX_ORPHAN_AHEAD || size > MAX_ORPHAN_BYTES {
             return;
         }

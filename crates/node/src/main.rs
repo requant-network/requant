@@ -76,6 +76,16 @@ fn main() {
                 let (token, chat) = v.rsplit_once(':').unwrap_or_else(|| usage("--notify-telegram TOKEN:CHAT_ID"));
                 notify.telegram = Some((token.to_string(), chat.to_string()));
             }
+            "--notify-telegram-file" => {
+                // TOKEN:CHAT_ID from a file, so the token is not in the command line
+                let path = value(k);
+                let v = std::fs::read_to_string(&path).unwrap_or_else(|e| usage(&format!("{path}: {e}")));
+                let (token, chat) = v
+                    .trim()
+                    .rsplit_once(':')
+                    .unwrap_or_else(|| usage("--notify-telegram-file: a file with TOKEN:CHAT_ID"));
+                notify.telegram = Some((token.to_string(), chat.to_string()));
+            }
             "--faucet-key" => {
                 let f = value(k);
                 let t = std::fs::read_to_string(&f).unwrap_or_else(|e| usage(&format!("{f}: {e}")));
@@ -227,7 +237,7 @@ fn usage(msg: &str) -> ! {
         "usage: requantd [--network test|regtest] [--datadir DIR] [--listen ADDR] [--rpc ADDR] [--connect HOST:PORT]...\n\
          \x20               [--mine PKH_HEX] [--mine-interval-ms N] [--threads N] [--max-reorg BLOCKS]
 \n                         [--rpc-token-file FILE] [--rpc-cookie] [--no-discover] [--explorer ADDR] [--auto-update] [--version]
-                         [--faucet-key FILE [--faucet-amount RQT] [--faucet-daily RQT]] [--notify-url URL] [--notify-telegram TOKEN:CHAT] [--max-upload 50G]"
+                         [--faucet-key FILE [--faucet-amount RQT] [--faucet-daily RQT]] [--notify-url URL] [--notify-telegram TOKEN:CHAT | --notify-telegram-file FILE] [--max-upload 50G]"
     );
     std::process::exit(2)
 }

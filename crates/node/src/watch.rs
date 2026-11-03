@@ -81,11 +81,25 @@ fn send(cfg: &NotifyConfig, e: &Event, height: u64) {
             .output();
     }
     if let Some((token, chat)) = &cfg.telegram {
-        let url = format!("https://api.telegram.org/bot{token}/sendMessage");
-        let _ = Command::new("curl")
-            .args(["-fsS", "--max-time", "15", "--data-urlencode", &format!("chat_id={chat}")])
-            .args(["--data-urlencode", &format!("text={text}"), &url])
-            .output();
+        // the bot token goes to curl as a config on its input, not as an argument every process can read
+        let config = format!(
+            "url = \"https://api.telegram.org/bot{token}/sendMessage\"
+"
+        );
+        let child = Command::new("curl")
+            .args(["-fsS", "--max-time", "15", "-K", "-", "--data-urlencode", &format!("chat_id={chat}")])
+            .args(["--data-urlencode", &format!("text={text}")])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        if let Ok(mut child) = child {
+            if let Some(mut input) = child.stdin.take() {
+                use std::io::Write;
+                let _ = input.write_all(config.as_bytes());
+            }
+            let _ = child.wait();
+        }
     }
 }
 
