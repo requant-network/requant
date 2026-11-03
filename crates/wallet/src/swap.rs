@@ -131,6 +131,10 @@ pub fn check_offer(
     if offer["btc_htlc"]["address"].as_str() != Some(h.address(net).to_string().as_str()) {
         return Err("the maker's address does not match its HTLC".into());
     }
+    let created = offer["created_btc_height"].as_u64().ok_or("created_btc_height missing")?;
+    if h.timeout >= 500_000_000 || u64::from(h.timeout) != created + u64::from(BTC_TIMEOUT_BLOCKS) {
+        return Err(format!("the maker's refund height {} is not {created} + {BTC_TIMEOUT_BLOCKS}", h.timeout));
+    }
     let sats = offer["btc_sats"].as_u64().ok_or("btc_sats missing")?;
     if sats == 0 || sats > max_sats {
         return Err(format!("the maker asks {sats} satoshis, more than the {max_sats} allowed"));
@@ -177,6 +181,37 @@ pub fn check_lock(lock: &RqtHtlc, hash: &[u8; 32], claim: &[u8; 32]) -> Result<(
     Ok(())
 }
 
+/// Blocks a claim needs before the maker's refund opens: revealing the secret any later lets the maker
+/// take the BTC and refund the RQT too.
+pub const CLAIM_MARGIN_BLOCKS: u64 = 30;
+
+/// What the taker checks before revealing the secret: the maker's lock is confirmed, holds the quoted
+/// amount in its own transaction, and leaves the claim time before the refund opens. `coins` are the
+/// HTLC address's (outpoint txid, value, confirmed); payments others sent to the address do not count.
+pub fn check_lock_funds(
+    lock: &RqtHtlc,
+    coins: &[([u8; 32], u64, bool)],
+    lock_txid: &[u8; 32],
+    quoted: u64,
+    height: u64,
+) -> Result<(), String> {
+    if lock.timeout <= height + CLAIM_MARGIN_BLOCKS {
+        return Err(format!(
+            "the maker's refund opens at height {}, too close to {height}: do not reveal the secret",
+            lock.timeout
+        ));
+    }
+    let mine: Vec<_> = coins.iter().filter(|c| c.0 == *lock_txid).collect();
+    if mine.iter().any(|c| !c.2) {
+        return Err("the maker's RQT lock is not confirmed yet; wait for a block".into());
+    }
+    let held: u64 = mine.iter().map(|c| c.1).sum();
+    if held != quoted {
+        return Err(format!("the maker locked {held} atoms, not the {quoted} quoted: do not reveal the secret"));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,7 +232,7 @@ mod tests {
         let hash = sha256(&[9; 32]);
         let mine = btc::public_key(&[4; 32]).unwrap();
         let h = btc::Htlc { hash, claim: btc::public_key(&[3; 32]).unwrap(), refund: mine, timeout: 500 };
-        let offer = json!({"btc_htlc": btc_htlc_json(&h, net), "btc_sats": 2000});
+        let offer = json!({"btc_htlc": btc_htlc_json(&h, net), "btc_sats": 2000, "created_btc_height": 500 - BTC_TIMEOUT_BLOCKS});
         assert_eq!(check_offer(&offer, &hash, &mine, net, 2000), Ok(h));
         assert!(check_offer(&offer, &hash, &mine, net, 1999).is_err(), "more than asked");
         assert!(check_offer(&offer, &sha256(&[8; 32]), &mine, net, 2000).is_err(), "another secret");
@@ -208,9 +243,24 @@ mod tests {
         let mut forged = offer.clone();
         forged["btc_htlc"]["address"] = json!(btc::Htlc { timeout: 501, ..h }.address(net).to_string());
         assert!(check_offer(&forged, &hash, &mine, net, 2000).is_err(), "an address of other parameters");
+        // a refund height away from the swap's window, or a time lock, freezes the taker's BTC
+        let mut late = offer.clone();
+        late["created_btc_height"] = json!(400);
+        assert!(check_offer(&late, &hash, &mine, net, 2000).is_err(), "a refund later than the window");
+        let far = btc::Htlc { timeout: 600_000_000, ..h };
+        let timed = json!({"btc_htlc": btc_htlc_json(&far, net), "btc_sats": 2000, "created_btc_height": 600_000_000 - BTC_TIMEOUT_BLOCKS});
+        assert!(check_offer(&timed, &hash, &mine, net, 2000).is_err(), "a time lock, not a height");
         let lock = RqtHtlc { hash, claim: [1; 32], refund: [2; 32], timeout: 9 };
         assert!(check_lock(&lock, &hash, &[1; 32]).is_ok());
         assert!(check_lock(&lock, &hash, &[2; 32]).is_err());
+        // the funds: confirmed, the quoted amount in the maker's own transaction, the refund far enough
+        let lock = RqtHtlc { timeout: 100, ..lock };
+        let (txid, spam) = ([7; 32], [8; 32]);
+        let coins = [(txid, 600, true), (txid, 400, true), (spam, 1, true)];
+        assert!(check_lock_funds(&lock, &coins, &txid, 1000, 60).is_ok(), "payments others sent do not count");
+        assert!(check_lock_funds(&lock, &coins, &txid, 2000, 60).is_err(), "less than quoted");
+        assert!(check_lock_funds(&lock, &coins, &txid, 1000, 70).is_err(), "the refund too close");
+        assert!(check_lock_funds(&lock, &[(txid, 1000, false)], &txid, 1000, 60).is_err(), "not confirmed");
         assert_eq!(rqt_htlc_from(&rqt_htlc_json(&lock)), Ok(lock));
     }
 

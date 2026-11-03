@@ -293,6 +293,29 @@ pub(crate) fn unhexs(s: &str) -> Option<Vec<u8>> {
     (0..s.len() / 2).map(|k| u8::from_str_radix(&s[2 * k..2 * k + 2], 16).ok()).collect()
 }
 
+/// Write a file only its owner can read, atomically: a temporary file of a random name next to it, created
+/// new with mode 0600 (on Unix), then renamed over. Wallets, keys and swap files hold secrets.
+pub fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut tag = [0u8; 8];
+    getrandom::getrandom(&mut tag).map_err(|e| std::io::Error::other(e.to_string()))?;
+    let mut name = path.as_os_str().to_owned();
+    name.push(format!(".{}.tmp", hexs(&tag)));
+    let tmp = std::path::PathBuf::from(name);
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+    let written = o.open(&tmp).and_then(|mut f| f.write_all(bytes).and_then(|()| f.sync_all()));
+    match written.and_then(|()| std::fs::rename(&tmp, path)) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
+    }
+}
+
 pub fn is_encrypted(file_text: &str) -> bool {
     file_text.trim().starts_with(KEY_TAG)
 }

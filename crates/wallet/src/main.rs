@@ -116,11 +116,10 @@ fn random<const N: usize>() -> [u8; N] {
     b
 }
 
-/// Write a file atomically (temporary file, then rename).
+/// Write a file atomically and private to its owner: wallets, keys and swap files hold secrets.
 fn write_file(path: &str, text: &str) {
-    let tmp = format!("{path}.tmp");
-    std::fs::write(&tmp, format!("{}\n", text.trim_end())).unwrap_or_else(|e| die(&format!("{tmp}: {e}")));
-    std::fs::rename(&tmp, path).unwrap_or_else(|e| die(&format!("{path}: {e}")));
+    requant_wallet::write_private(std::path::Path::new(path), format!("{}\n", text.trim_end()).as_bytes())
+        .unwrap_or_else(|e| die(&format!("{path}: {e}")));
 }
 
 fn read(path: &str) -> String {
@@ -845,7 +844,14 @@ fn main() {
                 tx.sign_second(&net.chain_id, i, key);
             }
             tx.check_standalone(&net.chain_id).unwrap_or_else(|e| die(&e.to_string()));
-            eprintln!("  {} RQT to {}", format_amount(tx.outputs()[0].value), address(&net, &tx.outputs()[0].pkh));
+            // the second signature covers every output: all of them are shown, and agreed to even for --out
+            eprintln!("  spends {n} coin(s) of the shared address");
+            for o in tx.outputs() {
+                eprintln!("  {} RQT to {}", format_amount(o.value), address(&net, &o.pkh));
+            }
+            if out.is_some() {
+                confirm("sign?", yes);
+            }
             match &out {
                 Some(path) => {
                     write_file(path, &hex(&tx.encode()));
@@ -1076,6 +1082,9 @@ fn main() {
             let offer = requant_node::rpc::request(maker_at, "swap_create", json!([atoms, hex(&hash), refund.to_string(), address(&net, &claim)]))
                 .unwrap_or_else(|e| die(&format!("maker: {e}")));
             let h = swap::check_offer(&offer, &hash, &refund, btc_net, max_sats.unwrap_or(price)).unwrap_or_else(|e| die(&e));
+            // the refund height is the maker's word for Bitcoin's height: the taker checks it against the chain
+            confirm(&format!("the maker says Bitcoin is at block {}, so a refund opens at block {}; is that about now?",
+                             offer["created_btc_height"], h.timeout), yes);
             let sats = offer["btc_sats"].as_u64().unwrap();
             let record = json!({"requant_swap": 1, "network": net.name, "btc_network": btc_net.to_string(), "maker": maker,
                                 "id": offer["id"], "rqt_atoms": atoms, "btc_sats": sats, "claim": hex(&claim),
@@ -1255,12 +1264,21 @@ fn main() {
                     let lock = swap::rqt_htlc_from(&st["rqt_htlc"]).unwrap_or_else(|e| die(&e));
                     swap::check_lock(&lock, &h.hash, &claim).unwrap_or_else(|e| die(&e));
                     let cond = contracts::Condition::Htlc(lock);
-                    let held: Vec<(OutPoint, u64)> = coins(&rpc(), &cond.owner()).into_iter().map(|c| (c.0.op, c.0.value)).collect();
+                    // the secret goes out only for the maker's confirmed lock of the quoted amount, with time to
+                    // claim before its refund opens
+                    let lock_txid: Hash = st["rqt_lock_txid"].as_str().and_then(|t| unhex(t).ok()).and_then(|b| b.try_into().ok())
+                        .unwrap_or_else(|| die("the maker did not name its lock transaction"));
+                    let found = coins(&rpc(), &cond.owner());
+                    let listed: Vec<([u8; 32], u64, bool)> = found.iter().map(|c| (c.0.op.txid, c.0.value, c.2)).collect();
+                    let quoted = v["rqt_atoms"].as_u64().unwrap_or_else(|| die(&format!("{file}: rqt_atoms missing")));
+                    swap::check_lock_funds(&lock, &listed, &lock_txid, quoted, tip(&rpc())).unwrap_or_else(|e| die(&e));
+                    let held: Vec<(OutPoint, u64)> = found.iter().filter(|c| c.0.op.txid == lock_txid).map(|c| (c.0.op, c.0.value)).collect();
                     let (mut tx, fee) = contracts::spend(&cond, "claim", &held, &claim, rate(), Some(secret), false).unwrap_or_else(|e| die(&e));
                     let keys = keys_of(&net, src, "swap claim");
                     let key = keys.iter().find(|k| owner_of(k) == claim).unwrap_or_else(|| die("this wallet does not hold the swap's receiving address"));
                     tx.sign(&net.chain_id, &vec![key; held.len()]);
                     eprintln!("  claim {} RQT (fee {} RQT); this reveals the secret to the maker", format_amount(tx.outputs()[0].value), format_amount(fee));
+                    confirm("claim?", yes);
                     println!("sent, txid {}", send(&rpc(), &tx));
                     // the maker sent TRX for the lock's fees: what was not burned goes back to it
                     if let (Some((api, _, terms, key)), true) = (&tron_side, st["fees"]["way"] == json!("trx")) {

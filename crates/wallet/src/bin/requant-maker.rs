@@ -115,7 +115,7 @@ fn main() {
             let mut secret = [0u8; 32];
             getrandom::getrandom(&mut secret).unwrap_or_else(|e| die(&e.to_string()));
             let pubkey = btc::public_key(&secret).unwrap_or_else(|e| die(&e));
-            std::fs::write(file, hex(&secret)).unwrap_or_else(|e| die(&e.to_string()));
+            requant_wallet::write_private(std::path::Path::new(file), hex(&secret).as_bytes()).unwrap_or_else(|e| die(&e.to_string()));
             println!("Bitcoin key written to {file} (keep it private)\npubkey {pubkey}");
         }
         ["tron-keygen", file] => {
@@ -125,7 +125,7 @@ fn main() {
             let mut secret = [0u8; 32];
             getrandom::getrandom(&mut secret).unwrap_or_else(|e| die(&e.to_string()));
             let a = tron::address_of(&secret).unwrap_or_else(|e| die(&e));
-            std::fs::write(file, hex(&secret)).unwrap_or_else(|e| die(&e.to_string()));
+            requant_wallet::write_private(std::path::Path::new(file), hex(&secret).as_bytes()).unwrap_or_else(|e| die(&e.to_string()));
             println!("TRON key written to {file} (keep it private)
 address {}", tron::to_base58(&a));
         }

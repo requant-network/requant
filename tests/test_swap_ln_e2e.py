@@ -113,7 +113,7 @@ def test_a_lightning_swap_completes(world):
     paid = world["w"].pay_async(world["payer"], bolt11)
     wait("the RQT lock", lambda: status(world, "l1.json")["state"] == "rqt_locked", 60)
     assert "status" not in paid, "the payment is held until the secret is known"
-    wait("the claim", lambda: world["wallet"]("swap", "claim", "l1.json", "taker.key", check=False).returncode == 0, 60)
+    wait("the claim", lambda: world["wallet"]("swap", "claim", "l1.json", "taker.key", "--yes", check=False).returncode == 0, 60)
     wait("the settlement", lambda: status(world, "l1.json")["state"] == "done", 60)
     wait("the payer's result", lambda: paid.get("status", {}).get("status") == "SUCCEEDED", 60)
     wait("the RQT at the taker", lambda: world["balance"]("taker.key") > before + 199 * 10**6)
@@ -136,4 +136,4 @@ def test_an_unclaimed_lightning_swap_goes_back_to_both(world):
     wait("the Requant timeout", lambda: world["rqt_height"]() >= timeout, 120)
     wait("the maker's refund", lambda: status(world, "l3.json")["state"] == "rqt_refunded", 120)
     wait("the payment back", lambda: paid.get("status", {}).get("status") == "FAILED", 60)
-    assert world["wallet"]("swap", "claim", "l3.json", "taker.key", check=False).returncode != 0
+    assert world["wallet"]("swap", "claim", "l3.json", "taker.key", "--yes", check=False).returncode != 0

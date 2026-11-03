@@ -160,7 +160,7 @@ def world():
 
 
 def buy(w, name, amount):
-    out = w["wallet"]("swap", "buy", w["maker"], amount, "taker.key", "--out", name).stdout
+    out = w["wallet"]("swap", "buy", w["maker"], amount, "taker.key", "--out", name, "--yes").stdout
     lines = dict(l.split(None, 1) for l in out.splitlines())
     sats = int(lines["pay"].split("(")[1].split()[0])
     return lines["to"].strip(), sats
@@ -180,7 +180,7 @@ def test_a_swap_completes(world):
     btc.mine(1)
     st = wait("the RQT lock", lambda: (s := status(w, "s1.json"))["state"] == "rqt_locked" and s)
     assert st["rqt_htlc"]["claim"] and st["funding"]["sats"] == sats
-    wait("the lock to confirm", lambda: w["wallet"]("swap", "claim", "s1.json", "taker.key", check=False).returncode == 0)
+    wait("the lock to confirm", lambda: w["wallet"]("swap", "claim", "s1.json", "taker.key", "--yes", check=False).returncode == 0)
     wait("the RQT at the taker", lambda: w["balance"]("taker.key") > before + 199 * 10**6)
     wait("the maker's BTC claim", lambda: status(w, "s1.json")["state"] in ("btc_claimed", "done"))
     btc.mine(1)
@@ -234,5 +234,5 @@ def test_a_swap_the_taker_never_claims(world):
     wait("the Requant timeout", lambda: w["rqt_height"]() >= timeout, secs=240)
     wait("the maker's refund", lambda: status(w, "s4.json")["state"] == "rqt_refunded", secs=120)
     # a claim is now impossible, and the taker takes the BTC back after the Bitcoin timeout
-    assert w["wallet"]("swap", "claim", "s4.json", "taker.key", check=False).returncode != 0
+    assert w["wallet"]("swap", "claim", "s4.json", "taker.key", "--yes", check=False).returncode != 0
     refund_btc(w, "s4.json", address)

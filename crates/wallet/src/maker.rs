@@ -16,6 +16,9 @@ use crate::btc::{self, Bitcoind};
 use crate::contracts::{self, Condition};
 use crate::ln::Lnd;
 use crate::swap::{self, BTC_TIMEOUT_BLOCKS, MIN_BTC_BLOCKS_LEFT, RQT_TIMEOUT_BLOCKS};
+
+/// How deep the maker reads an HTLC address's history for the claim that reveals the secret.
+const HISTORY_DEPTH: u64 = 10_000;
 use crate::tron::{self, LockState, Terms, Tron};
 use crate::{owner_of, plan_payment, sign_with, Spendable};
 use ed25519_dalek::SigningKey;
@@ -99,10 +102,12 @@ impl Maker {
     }
 
     fn save(&self) -> Result<(), String> {
-        let tmp = self.cfg.state.with_extension("tmp");
-        std::fs::write(&tmp, serde_json::to_string_pretty(&json!({"swaps": self.swaps})).unwrap())
-            .and_then(|_| std::fs::rename(&tmp, &self.cfg.state))
-            .map_err(|e| format!("state: {e}"))
+        // the state holds revealed secrets: private to the maker's user
+        crate::write_private(
+            &self.cfg.state,
+            serde_json::to_string_pretty(&json!({"swaps": self.swaps})).unwrap().as_bytes(),
+        )
+        .map_err(|e| format!("state: {e}"))
     }
 
     fn me(&self) -> Hash {
@@ -638,7 +643,8 @@ impl Maker {
 
     /// The secret, if a transfer spending the lock revealed it.
     fn secret_on_requant(&self, owner: &Hash, lock: &RqtHtlc, s: &Value) -> Result<Option<[u8; 32]>, String> {
-        let history = self.rqt.call("history", json!([hex(owner), 20])).map_err(|e| e.to_string())?;
+        // the address is this swap's own, but anyone can pay to it: a few entries could hide the claim
+        let history = self.rqt.call("history", json!([hex(owner), HISTORY_DEPTH])).map_err(|e| e.to_string())?;
         for e in history.as_array().into_iter().flatten() {
             if e["sent"].as_u64().unwrap_or(0) == 0 {
                 continue;
