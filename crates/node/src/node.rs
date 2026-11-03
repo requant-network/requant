@@ -100,6 +100,9 @@ fn solicited(m: &Msg) -> bool {
 fn bans_header() -> String {
     format!("version {VERSION}")
 }
+/// `GetHeaders` a peer gets answered per `HEADER_ASK_WINDOW` seconds.
+const MAX_HEADER_ASKS: u32 = 10;
+const HEADER_ASK_WINDOW: u64 = 10;
 /// Bytes served for one `GetData` request.
 const MAX_GETDATA_BYTES: usize = 32 << 20;
 /// Bytes queued for a peer that does not read them; beyond this the peer is disconnected.
@@ -186,6 +189,8 @@ pub struct Peer {
     inflight: usize,
     /// Misbehaviour points; at `BAN_SCORE` the peer is banned (see `misbehaviour`).
     pub score: u32,
+    /// `GetHeaders` answered in the current window: (window start in seconds, count).
+    header_asks: (u64, u32),
 }
 
 impl Peer {
@@ -806,6 +811,18 @@ impl State {
                 }
             }
             Msg::GetHeaders(loc) => {
+                // each answer reads up to 2000 blocks from disk under the node's lock: a syncing peer needs one
+                // every second at most, a peer asking faster is not answered
+                if let Some(p) = self.peers.get_mut(&peer) {
+                    let at = now();
+                    if at >= p.header_asks.0 + HEADER_ASK_WINDOW {
+                        p.header_asks = (at, 0);
+                    }
+                    p.header_asks.1 += 1;
+                    if p.header_asks.1 > MAX_HEADER_ASKS {
+                        return Ok(());
+                    }
+                }
                 let payload = self.headers_payload(&loc);
                 self.send(peer, Msg::Headers(payload));
             }
@@ -1002,6 +1019,7 @@ fn spawn_peer(shared: Shared, stream: TcpStream, outbound: bool) -> io::Result<(
             protocol: 0,
             inflight: 0,
             score: 0,
+            header_asks: (0, 0),
         };
         st.peers.insert(id, peer);
         (id, st.hello(), magic(&st.chain.net))
@@ -1039,6 +1057,10 @@ fn spawn_peer(shared: Shared, stream: TcpStream, outbound: bool) -> io::Result<(
             }
             let result = match m {
                 Msg::Headers(bytes) => handle_headers(&shared, id, &bytes),
+                Msg::Block(bytes) => {
+                    prepare_block_epoch(&shared, &bytes);
+                    shared.lock().unwrap().on_message(id, Msg::Block(bytes))
+                }
                 m => shared.lock().unwrap().on_message(id, m),
             };
             let mut st = shared.lock().unwrap();
@@ -1073,6 +1095,28 @@ fn spawn_peer(shared: Shared, stream: TcpStream, outbound: bool) -> io::Result<(
 
 /// A `Headers` message: each header's context is checked under the lock, its work claim (the expensive
 /// part, ~20 ms for TNet v1) is verified without it, then it is inserted. Continues the download.
+/// A block whose epoch weights are not cached (a fork from the previous epoch): derive them here, off the
+/// node's lock, before the block is checked under it; otherwise the chain would derive them while holding
+/// the lock (7 s and 512 MiB for TNet v1). Only for a known parent and a ticket that meets the target, so
+/// a junk block costs its sender the same work as a header.
+fn prepare_block_epoch(shared: &Shared, bytes: &[u8]) {
+    let (seed, current) = {
+        let st = shared.lock().unwrap();
+        let mut r = Reader::new(bytes);
+        let (Ok(h), net) = (Header::decode(&mut r), st.chain.net.clone()) else { return };
+        let Ok(c) = Claim::decode(&mut r, net.tnet.w) else { return };
+        if !st.chain.contains(&h.prev) {
+            return;
+        }
+        let seed = st.chain.epoch_seed(&h.prev, h.height);
+        if st.chain.has_epoch(&seed) || requant_consensus::chain::claim_hash_ok(&net, &h, &c).is_err() {
+            return;
+        }
+        (seed, st.chain.upcoming_epoch_seeds()[0])
+    };
+    epoch_for(shared, &seed, &[current]);
+}
+
 fn handle_headers(shared: &Shared, peer: u64, bytes: &[u8]) -> Result<(), &'static str> {
     let net = shared.lock().unwrap().chain.net.clone();
     let mut r = Reader::new(bytes);

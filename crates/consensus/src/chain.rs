@@ -35,6 +35,63 @@ pub trait BodySource: Send + Sync {
     fn load(&self, id: &Hash) -> Option<Block>;
 }
 
+/// The unspent outputs, with an index by owner: one address's coins are found without a scan of the whole
+/// set (the public API answers them for up to 200 addresses a request).
+#[derive(Default)]
+struct UtxoSet {
+    coins: HashMap<OutPoint, Coin>,
+    by_owner: HashMap<Hash, std::collections::BTreeSet<OutPoint>>,
+}
+
+impl UtxoSet {
+    fn insert(&mut self, op: OutPoint, coin: Coin) -> Option<Coin> {
+        let old = self.coins.insert(op, coin);
+        if let Some(o) = &old {
+            self.unindex(&op, &o.output.pkh);
+        }
+        self.by_owner.entry(coin.output.pkh).or_default().insert(op);
+        old
+    }
+    fn remove(&mut self, op: &OutPoint) -> Option<Coin> {
+        let coin = self.coins.remove(op)?;
+        self.unindex(op, &coin.output.pkh);
+        Some(coin)
+    }
+    fn unindex(&mut self, op: &OutPoint, owner: &Hash) {
+        if let Some(set) = self.by_owner.get_mut(owner) {
+            set.remove(op);
+            if set.is_empty() {
+                self.by_owner.remove(owner);
+            }
+        }
+    }
+    fn get(&self, op: &OutPoint) -> Option<&Coin> {
+        self.coins.get(op)
+    }
+    fn len(&self) -> usize {
+        self.coins.len()
+    }
+    fn iter(&self) -> std::collections::hash_map::Iter<'_, OutPoint, Coin> {
+        self.coins.iter()
+    }
+    /// An owner's coins, by outpoint.
+    fn of(&self, owner: &Hash) -> Vec<(OutPoint, Coin)> {
+        self.by_owner.get(owner).into_iter().flatten().map(|op| (*op, self.coins[op])).collect()
+    }
+    /// How many owners hold coins.
+    fn owners(&self) -> usize {
+        self.by_owner.len()
+    }
+}
+
+impl<'a> IntoIterator for &'a UtxoSet {
+    type Item = (&'a OutPoint, &'a Coin);
+    type IntoIter = std::collections::hash_map::Iter<'a, OutPoint, Coin>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.coins.iter()
+    }
+}
+
 struct Entry {
     header: Header,
     /// The block while it is held in memory (recent and side-chain blocks); otherwise read from the source.
@@ -64,7 +121,7 @@ pub struct Chain {
     entries: HashMap<Hash, Entry>,
     /// Block ids of the best chain by height.
     active: Vec<Hash>,
-    utxo: HashMap<OutPoint, Coin>,
+    utxo: UtxoSet,
     undo: HashMap<Hash, Vec<(OutPoint, Coin)>>,
     epochs: Vec<(Hash, Arc<tnet::Epoch>)>,
     /// Reason the last block marked invalid failed to connect.
@@ -281,7 +338,7 @@ impl Chain {
             threads: threads.max(1),
             entries: HashMap::new(),
             active: vec![id],
-            utxo: HashMap::new(),
+            utxo: UtxoSet::default(),
             undo: HashMap::new(),
             epochs: Vec::new(),
             last_failure: "",
@@ -401,14 +458,12 @@ impl Chain {
 
     /// Addresses (key hashes) holding at least one unspent output (linear scan).
     pub fn holder_count(&self) -> usize {
-        self.utxo.values().map(|c| c.output.pkh).collect::<std::collections::HashSet<_>>().len()
+        self.utxo.owners()
     }
 
     /// Unspent outputs paying to `pkh` (linear scan; for wallets and tests).
     pub fn coins_of(&self, owner: &Hash) -> Vec<(OutPoint, Coin)> {
-        let mut v: Vec<_> = self.utxo.iter().filter(|(_, c)| c.output.pkh == *owner).map(|(o, c)| (*o, *c)).collect();
-        v.sort_by_key(|(o, _)| *o);
-        v
+        self.utxo.of(owner)
     }
 
     /// Block ids from the tip back to genesis at exponentially growing distances (sync locator).
@@ -978,4 +1033,33 @@ pub fn mine(net: &Network, epoch: &tnet::Epoch, header: &Header, start: u64, non
         }
     }
     None
+}
+
+#[cfg(test)]
+mod utxo_tests {
+    use super::*;
+
+    #[test]
+    fn the_owner_index_follows_every_change() {
+        let coin = |pkh: u8, value: u64| Coin { output: Output { value, pkh: [pkh; 32] }, height: 1, coinbase: false };
+        let op = |n: u8, vout: u32| OutPoint { txid: [n; 32], vout };
+        let mut set = UtxoSet::default();
+        set.insert(op(2, 0), coin(7, 10));
+        set.insert(op(1, 1), coin(7, 20));
+        set.insert(op(3, 0), coin(8, 30));
+        assert_eq!(
+            set.of(&[7; 32]).iter().map(|(o, c)| (o.txid[0], c.output.value)).collect::<Vec<_>>(),
+            [(1, 20), (2, 10)]
+        );
+        assert_eq!(set.owners(), 2);
+        // a coin rewritten to another owner leaves the first one's index
+        set.insert(op(2, 0), coin(8, 11));
+        assert_eq!(set.of(&[7; 32]).len(), 1);
+        assert_eq!(set.of(&[8; 32]).len(), 2);
+        set.remove(&op(1, 1));
+        assert!(set.of(&[7; 32]).is_empty());
+        assert_eq!(set.owners(), 1);
+        assert_eq!(set.len(), 2);
+        assert_eq!((&set).into_iter().count(), 2);
+    }
 }
