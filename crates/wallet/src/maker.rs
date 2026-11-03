@@ -269,7 +269,9 @@ impl Maker {
             match self.step_reclaim(k) {
                 Ok(Some(what)) => {
                     log.push(format!("{}: {what}", &self.swaps[k]["id"].as_str().unwrap_or("")[..12]));
-                    let _ = self.save();
+                    if let Err(e) = self.save() {
+                        log.push(format!("state not saved: {e}"));
+                    }
                 }
                 Ok(None) => {}
                 Err(e) => log.push(format!("{}: reclaim: {e}", &self.swaps[k]["id"].as_str().unwrap_or("")[..12])),
@@ -279,6 +281,7 @@ impl Maker {
                 "waiting_btc" => btc_tip.clone().and_then(|b| self.step_funding(k, b, rqt_tip)),
                 "waiting_ln" => btc_tip.clone().and_then(|b| self.step_ln(k, b, rqt_tip)),
                 "waiting_token" => self.step_token(k, rqt_tip),
+                "locking" => self.step_locking(k),
                 "rqt_locked" => self.step_locked(k, rqt_tip),
                 "btc_claimed" => self.step_claimed(k),
                 "token_claimed" => self.step_token_claimed(k),
@@ -287,7 +290,9 @@ impl Maker {
             match step {
                 Ok(Some(what)) => {
                     log.push(format!("{}: {what}", &self.swaps[k]["id"].as_str().unwrap_or("")[..12]));
-                    let _ = self.save();
+                    if let Err(e) = self.save() {
+                        log.push(format!("state not saved: {e}"));
+                    }
                 }
                 Ok(None) => {}
                 Err(e) => log.push(format!("{}: {e}", &self.swaps[k]["id"].as_str().unwrap_or("")[..12])),
@@ -339,13 +344,8 @@ impl Maker {
         let claim: Hash =
             unhex(s["taker_claim"].as_str().unwrap_or("")).ok().and_then(|b| b.try_into().ok()).ok_or("bad claim")?;
         let lock = RqtHtlc { hash: h.hash, claim, refund: self.me(), timeout: rqt_tip + RQT_TIMEOUT_BLOCKS };
-        let owner = Condition::Htlc(lock).owner();
-        let txid = self.pay(owner, s["rqt_atoms"].as_u64().unwrap_or(0))?;
-        self.set(
-            k,
-            json!({"state": "rqt_locked", "funding": funding, "rqt_htlc": swap::rqt_htlc_json(&lock),
-                           "rqt_lock_txid": txid}),
-        );
+        self.set(k, json!({"funding": funding}));
+        let txid = self.lock_rqt(k, lock)?;
         Ok(Some(format!("BTC confirmed ({confirmations}); RQT locked in {txid}")))
     }
 
@@ -380,17 +380,12 @@ impl Maker {
         let claim: Hash =
             unhex(s["taker_claim"].as_str().unwrap_or("")).ok().and_then(|b| b.try_into().ok()).ok_or("bad claim")?;
         let lock = RqtHtlc { hash, claim, refund: self.me(), timeout: rqt_tip + LN_RQT_TIMEOUT_BLOCKS };
-        match self.pay(Condition::Htlc(lock).owner(), s["rqt_atoms"].as_u64().unwrap_or(0)) {
-            Ok(txid) => {
-                self.set(
-                    k,
-                    json!({"state": "rqt_locked", "rqt_htlc": swap::rqt_htlc_json(&lock), "rqt_lock_txid": txid,
-                                   "ln_htlc_expiry": expiry}),
-                );
-                Ok(Some(format!("Lightning payment held; RQT locked in {txid}")))
-            }
+        self.set(k, json!({"ln_htlc_expiry": expiry}));
+        match self.lock_rqt(k, lock) {
+            Ok(txid) => Ok(Some(format!("Lightning payment held; RQT locked in {txid}"))),
             Err(e) => {
-                cancel("lock failed")?;
+                let lnd = self.cfg.lnd.as_ref().ok_or("no Lightning node")?;
+                lnd.cancel(&hash).map_err(|c| format!("lock failed; cancel failed: {c}"))?;
                 self.set(k, json!({"state": "failed", "note": e.clone()}));
                 Ok(Some(format!("could not lock the RQT ({e}); invoice cancelled, the payment goes back")))
             }
@@ -541,6 +536,42 @@ impl Maker {
         let (txid, signed) = self.claim_token(&s, &secret)?;
         self.set(k, json!({"token_claim_txid": txid, "token_claim_hex": hex(&signed)}));
         Ok(Some(format!("USDT claim sent again in {txid}")))
+    }
+
+    /// Lock the swap's RQT under `lock`, at most once: the intent (state `locking` with the lock) is saved
+    /// before any coin moves, and a swap found in `locking` (the maker stopped between the send and the save)
+    /// looks for the payment at the lock's address before it pays. Then the swap is `rqt_locked`.
+    fn lock_rqt(&mut self, k: usize, lock: RqtHtlc) -> Result<String, String> {
+        if self.swaps[k]["state"] != json!("locking") {
+            self.set(k, json!({"state": "locking", "rqt_htlc": swap::rqt_htlc_json(&lock)}));
+            self.save()?;
+        }
+        let owner = Condition::Htlc(lock).owner();
+        let txid = match self.received_at(&owner)? {
+            Some(txid) => txid,
+            None => self.pay(owner, self.swaps[k]["rqt_atoms"].as_u64().unwrap_or(0))?,
+        };
+        self.set(k, json!({"state": "rqt_locked", "rqt_lock_txid": txid}));
+        self.save()?;
+        Ok(txid)
+    }
+
+    /// A transfer already paid to `owner` (mempool included), if any.
+    fn received_at(&self, owner: &Hash) -> Result<Option<String>, String> {
+        let history = self.rqt.call("history", json!([hex(owner), HISTORY_DEPTH])).map_err(|e| e.to_string())?;
+        Ok(history
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|e| e["received"].as_u64().unwrap_or(0) > 0)
+            .and_then(|e| e["txid"].as_str().map(str::to_string)))
+    }
+
+    /// A swap left in `locking`: finish the lock it recorded.
+    fn step_locking(&mut self, k: usize) -> Result<Option<String>, String> {
+        let lock = swap::rqt_htlc_from(&self.swaps[k]["rqt_htlc"])?;
+        let txid = self.lock_rqt(k, lock)?;
+        Ok(Some(format!("an interrupted lock finished; RQT locked in {txid}")))
     }
 
     /// Pay `atoms` to `owner` from the maker's key (change back to it); the txid.
