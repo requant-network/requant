@@ -31,6 +31,8 @@ pub struct Spendable {
 
 /// Default fee rate in atoms per byte, and the smallest fee the wallet pays.
 pub const DEFAULT_FEE_RATE: u64 = 5;
+/// Change below this many atoms is left to the fee: spending such a coin later would cost about as much.
+pub const DUST_CHANGE: u64 = 1_000;
 /// The highest fee rate the wallet takes from a node's estimate (a rate given with --fee-rate is not capped).
 pub const MAX_ESTIMATED_FEE_RATE: u64 = 100;
 pub const MIN_FEE: u64 = 1000;
@@ -110,10 +112,12 @@ pub fn plan_payment(
     }
     let mut outputs: Vec<Output> = payments.iter().map(|(to, v)| Output { value: *v, pkh: *to }).collect();
     let change = total - pay - fee;
-    if change > 0 {
+    // change worth less than spending it later is not made: it goes to the fee (and adds no coin to the set)
+    if change >= DUST_CHANGE {
         outputs.push(Output { value: change, pkh: change_to });
+        return Ok((unsigned(&chosen, outputs), chosen, fee));
     }
-    Ok((unsigned(&chosen, outputs), chosen, fee))
+    Ok((unsigned(&chosen, outputs), chosen, total - pay))
 }
 
 /// [`plan_payment`] from one key, change back to it, signed. Returns the transaction and its fee.
@@ -195,6 +199,21 @@ pub fn build_transfer(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn change_too_small_to_spend_goes_to_the_fee() {
+        let coin = |value| Spendable { op: OutPoint { txid: [3; 32], vout: 0 }, value, owner: [0; 32] };
+        let fee = fee_for(1, 2, 1);
+        // a little over the payment and its fee: no change output, the rest is fee
+        let (tx, _, paid) = plan_payment(&[coin(10_000 + fee + 400)], &[([9; 32], 10_000)], 1, [8; 32]).unwrap();
+        assert_eq!(tx.outputs().len(), 1);
+        assert_eq!(paid, fee + 400);
+        // enough for real change: kept
+        let (tx, _, paid) =
+            plan_payment(&[coin(10_000 + fee + DUST_CHANGE)], &[([9; 32], 10_000)], 1, [8; 32]).unwrap();
+        assert_eq!(tx.outputs().len(), 2);
+        assert_eq!(paid, fee);
+    }
 
     #[test]
     fn transfer_building() {
