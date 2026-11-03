@@ -98,6 +98,21 @@ test network.
 - [x] Before the test network started: the genesis time in `crates/consensus/src/params.rs`.
 - [ ] Security policy for consensus bugs; release signing.
 
+## 5. Requant Lab: the network laboratory ([requant.network/research/lab](https://requant.network/research/lab))
+
+- [x] A deterministic laboratory of virtual proof-of-work networks at [requant.network/lab](https://requant.network/lab/):
+      nodes, pools and miner groups, links, partitions and outages, difficulty rules of real networks, coins,
+      transactions, attacks (selfish mining, double spends, pool sabotage), several chains and hard forks; series
+      over many seeds; worlds on the server and an HTTP API. The lab's source is private for now.
+- [x] Held to this repository: the model's ASERT equals `crates/consensus` bit for bit on whole seconds, and the
+      protocol mode runs real regtest blocks with TNet claims through every simulated node's `Chain::accept`
+      (adapter pinned at `a9ce4d0`).
+- [x] Live broadcasts: one Bitcoin-profile network at ×20, ×30 and ×50 and a crowd channel with 50 bots, steered by
+      viewers with charges, a queue and support; rewind, a link and a video of the last minute.
+- [ ] Move the adapter's pin past node 0.18.0 (relative difficulty from testnet height 8020).
+- [ ] Broadcasts: votes for the next event, predictions and a node of one's own, a broadcast of one's own plan.
+- [ ] Attacks of the fee era (undercutting, stubborn and optimal selfish mining, bribery); proof-of-stake networks.
+
 ## Research still open (tracked in the Abacus repository)
 
 - An int8-GEMM ASIC cost model; a measured LUT-precomputation kernel; light-client options.
