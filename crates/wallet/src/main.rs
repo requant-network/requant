@@ -287,6 +287,27 @@ fn tip(rpc: &Backend) -> u64 {
     v["height"].as_u64().unwrap_or_else(|| die("rpc: getinfo gave no height"))
 }
 
+/// The coins a transfer is about to spend, checked against their own transactions: the node or the API
+/// answer the coin list, and a value stated lower than it is would make the rest the miner's fee.
+fn check_coins(rpc: &Backend, coins: &[(OutPoint, u64, Hash)]) {
+    let mut seen: HashMap<Hash, Tx> = HashMap::new();
+    for (op, value, owner) in coins {
+        let tx = seen.entry(op.txid).or_insert_with(|| {
+            let v = rpc.call("gettx", json!([hex(&op.txid)])).unwrap_or_else(|e| die(&format!("rpc: {e}")));
+            v["hex"]
+                .as_str()
+                .and_then(|h| unhex(h).ok())
+                .and_then(|b| Tx::decode_exact(&b).ok())
+                .filter(|tx| tx.txid() == op.txid)
+                .unwrap_or_else(|| die(&format!("the node gave a wrong transaction for {}", hex(&op.txid))))
+        });
+        let out = tx.outputs().get(op.vout as usize).copied();
+        if out.map(|o| (o.value, o.pkh)) != Some((*value, *owner)) {
+            die(&format!("the node misstates coin {}:{}; nothing was signed", hex(&op.txid), op.vout));
+        }
+    }
+}
+
 /// Where a channel's deposit stands on the chain: `(funded and unspent, confirmed, spent)`.
 fn channel_status(rpc: &Backend, c: &channel::Channel) -> (bool, bool, bool) {
     let op = c.outpoint();
@@ -503,7 +524,8 @@ fn main() {
         };
         match rpc().call("estimatefee", json!([blocks])) {
             Ok(v) => {
-                let r = v["feerate"].as_u64().unwrap_or(DEFAULT_FEE_RATE);
+                // a node's estimate, not the user's choice: a node gone wrong must not set any fee it likes
+                let r = v["feerate"].as_u64().unwrap_or(DEFAULT_FEE_RATE).min(MAX_ESTIMATED_FEE_RATE);
                 eprintln!("fee rate {r} atoms/byte ({fee_opt}: the next {blocks} block(s))");
                 r
             }
@@ -766,6 +788,7 @@ fn main() {
                 .filter(|c| c.2)
                 .map(|c| (c.0.op, c.0.value))
                 .collect();
+            check_coins(&rpc(), &held.iter().map(|(op, v)| (*op, *v, cond.owner())).collect::<Vec<_>>());
             let (mut tx, fee) = contracts::spend(&cond, how, &held, &to, rate(), preimage, anyone_can_pay)
                 .unwrap_or_else(|e| die(&e));
             let signers = cond.signers(how).unwrap_or_else(|e| die(&e));
@@ -904,6 +927,7 @@ fn main() {
             let owner = multi2_owner(&client, &server);
             let (mut tx, chosen, fee) =
                 plan_payment(&spendable, &[(owner, amount)], rate(), change).unwrap_or_else(|e| die(&e));
+            check_coins(&rpc(), &chosen.iter().map(|c| (c.op, c.value, c.owner)).collect::<Vec<_>>());
             sign_with(&net, &mut tx, &chosen, &keys).unwrap_or_else(|e| die(&e));
             let vout = tx.outputs().iter().position(|o| o.pkh == owner).unwrap() as u32;
             let funding_owners = chosen.iter().map(|c| c.owner).collect();
@@ -1273,6 +1297,7 @@ fn main() {
                     let quoted = v["rqt_atoms"].as_u64().unwrap_or_else(|| die(&format!("{file}: rqt_atoms missing")));
                     swap::check_lock_funds(&lock, &listed, &lock_txid, quoted, tip(&rpc())).unwrap_or_else(|e| die(&e));
                     let held: Vec<(OutPoint, u64)> = found.iter().filter(|c| c.0.op.txid == lock_txid).map(|c| (c.0.op, c.0.value)).collect();
+                    check_coins(&rpc(), &held.iter().map(|(op, v)| (*op, *v, cond.owner())).collect::<Vec<_>>());
                     let (mut tx, fee) = contracts::spend(&cond, "claim", &held, &claim, rate(), Some(secret), false).unwrap_or_else(|e| die(&e));
                     let keys = keys_of(&net, src, "swap claim");
                     let key = keys.iter().find(|k| owner_of(k) == claim).unwrap_or_else(|| die("this wallet does not hold the swap's receiving address"));
@@ -1538,6 +1563,7 @@ fn main() {
                     show_payment(&net, &lines, fee, transfer_size(chosen.len(), lines.len()) as usize);
                     confirm("send?", yes);
                     let keys = HashMap::from([(me, key)]);
+                    check_coins(&rpc(), &chosen.iter().map(|c| (c.op, c.value, c.owner)).collect::<Vec<_>>());
                     sign_with(&net, &mut tx, &chosen, &keys).unwrap_or_else(|e| die(&e));
                     println!("sent, txid {}", send(&rpc(), &tx));
                 }
@@ -1549,6 +1575,7 @@ fn main() {
                         plan(&net, spendable, &pairs, rate(), || next_change(&mut w, Some(&seed), &rpc()));
                     show_payment(&net, &lines, fee, transfer_size(chosen.len(), lines.len()) as usize);
                     confirm("send?", yes);
+                    check_coins(&rpc(), &chosen.iter().map(|c| (c.op, c.value, c.owner)).collect::<Vec<_>>());
                     sign_with(&net, &mut tx, &chosen, &w.keyring(&seed)).unwrap_or_else(|e| die(&e));
                     save(&path, &w);
                     println!("sent, txid {}", send(&rpc(), &tx));
@@ -1587,6 +1614,7 @@ fn main() {
                 format_amount(fee)
             );
             confirm("send?", yes);
+            check_coins(&rpc(), &chosen.iter().map(|c| (c.op, c.value, c.owner)).collect::<Vec<_>>());
             sign_with(&net, &mut tx, &chosen, &keys).unwrap_or_else(|e| die(&e));
             if let Some((path, w)) = wallet {
                 save(&path, &w);

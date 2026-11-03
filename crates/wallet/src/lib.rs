@@ -31,6 +31,8 @@ pub struct Spendable {
 
 /// Default fee rate in atoms per byte, and the smallest fee the wallet pays.
 pub const DEFAULT_FEE_RATE: u64 = 5;
+/// The highest fee rate the wallet takes from a node's estimate (a rate given with --fee-rate is not capped).
+pub const MAX_ESTIMATED_FEE_RATE: u64 = 100;
 pub const MIN_FEE: u64 = 1000;
 /// Inputs per transaction (a node accepts transactions up to 100 kB; an input takes 132 bytes).
 pub const MAX_INPUTS: usize = 600;

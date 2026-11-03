@@ -11,14 +11,24 @@ use std::time::Duration;
 
 pub enum Backend {
     Rpc(SocketAddr),
-    Api { host: String, addr: SocketAddr },
+    Api {
+        host: String,
+        addr: SocketAddr,
+    },
+    /// The same API over TLS (`https://host[:port][/prefix]`): an answer on the way cannot be changed.
+    ApiTls {
+        base: String,
+    },
 }
 
 impl Backend {
-    /// `http://host:port`, `http://host` (port 80) or `host:port`.
+    /// `http://host:port`, `http://host` (port 80), `host:port`, or `https://host[:port][/prefix]`.
     pub fn api(url: &str) -> Result<Backend, String> {
-        if url.starts_with("https://") {
-            return Err("https is not supported; the explorer's API is plain http".into());
+        if let Some(rest) = url.strip_prefix("https://") {
+            if rest.is_empty() || rest.chars().any(|c| c.is_whitespace() || c == '?' || c == '#') {
+                return Err(format!("{url}: not an https address"));
+            }
+            return Ok(Backend::ApiTls { base: url.trim_end_matches('/').to_string() });
         }
         let rest = url.strip_prefix("http://").unwrap_or(url).trim_end_matches('/');
         let hostport = if rest.contains(':') { rest.to_string() } else { format!("{rest}:80") };
@@ -36,7 +46,7 @@ impl Backend {
     pub fn list_max(&self) -> usize {
         match self {
             Backend::Rpc(_) => 100,
-            Backend::Api { .. } => 25,
+            Backend::Api { .. } | Backend::ApiTls { .. } => 25,
         }
     }
 
@@ -49,10 +59,9 @@ impl Backend {
 
     /// A node RPC call; with an API backend, the calls the wallet makes are mapped to API paths.
     pub fn call(&self, method: &str, params: Value) -> io::Result<Value> {
-        let (host, addr) = match self {
-            Backend::Rpc(a) => return requant_node::rpc::request(*a, method, params),
-            Backend::Api { host, addr } => (host, *addr),
-        };
+        if let Backend::Rpc(a) = self {
+            return requant_node::rpc::request(*a, method, params);
+        }
         let p = |k: usize| -> io::Result<String> {
             match &params[k] {
                 Value::String(s) if s.chars().all(|c| c.is_ascii_alphanumeric()) => Ok(s.clone()),
@@ -70,7 +79,11 @@ impl Backend {
             }
             _ => self.path_of(method, &p)?,
         };
-        let (status, v) = http(addr, host, verb, &path, body.as_deref())?;
+        let (status, v) = match self {
+            Backend::Api { host, addr } => http(*addr, host, verb, &path, body.as_deref())?,
+            Backend::ApiTls { base } => https(base, verb, &path, body.as_deref())?,
+            Backend::Rpc(_) => unreachable!("answered above"),
+        };
         if status != 200 {
             return Err(io::Error::other(v["error"].as_str().unwrap_or("API error").to_string()));
         }
@@ -105,6 +118,24 @@ impl Backend {
 }
 
 /// One HTTP/1.1 request; (status, JSON body).
+/// One request over TLS (the system's roots through rustls): status and JSON body.
+fn https(base: &str, verb: &str, path: &str, body: Option<&str>) -> io::Result<(u16, Value)> {
+    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(60)).redirects(0).build();
+    let request = agent.request(verb, &format!("{base}{path}")).set("Content-Type", "application/json");
+    let answer = match body {
+        Some(b) => request.send_string(b),
+        None => request.call(),
+    };
+    let response = match answer {
+        Ok(r) => r,
+        Err(ureq::Error::Status(_, r)) => r,
+        Err(e) => return Err(io::Error::other(e.to_string())),
+    };
+    let status = response.status();
+    let text = response.into_string().map_err(|e| io::Error::other(e.to_string()))?;
+    Ok((status, serde_json::from_str(&text).unwrap_or(Value::Null)))
+}
+
 fn http(addr: SocketAddr, host: &str, verb: &str, path: &str, body: Option<&str>) -> io::Result<(u16, Value)> {
     let mut s = TcpStream::connect_timeout(&addr, Duration::from_secs(15))?;
     s.set_read_timeout(Some(Duration::from_secs(60)))?;
@@ -120,4 +151,19 @@ fn http(addr: SocketAddr, host: &str, verb: &str, path: &str, body: Option<&str>
         resp.split(' ').nth(1).and_then(|c| c.parse().ok()).ok_or_else(|| io::Error::other("bad HTTP answer"))?;
     let json = resp.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or("");
     Ok((status, serde_json::from_str(json).unwrap_or(Value::Null)))
+}
+
+#[cfg(test)]
+mod tls_tests {
+    use super::*;
+
+    #[test]
+    fn an_https_api_address_goes_over_tls() {
+        assert!(
+            matches!(Backend::api("https://api.example.org/requant/"), Ok(Backend::ApiTls { base }) if base == "https://api.example.org/requant")
+        );
+        assert!(Backend::api("https://").is_err());
+        assert!(Backend::api("https://a.example.org/x?y=1").is_err());
+        assert!(matches!(Backend::api("http://127.0.0.1:19380"), Ok(Backend::Api { .. })));
+    }
 }
