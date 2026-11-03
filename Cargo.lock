@@ -610,7 +610,7 @@ dependencies = [
 
 [[package]]
 name = "requant-node"
-version = "0.18.1"
+version = "0.18.2"
 dependencies = [
  "ed25519-dalek",
  "requant-consensus",

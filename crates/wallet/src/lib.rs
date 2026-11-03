@@ -286,7 +286,8 @@ pub(crate) fn hexs(b: &[u8]) -> String {
 }
 
 pub(crate) fn unhexs(s: &str) -> Option<Vec<u8>> {
-    if !s.len().is_multiple_of(2) {
+    // ASCII digits only: a byte slice inside a UTF-8 character would panic
+    if !s.len().is_multiple_of(2) || !s.bytes().all(|c| c.is_ascii_hexdigit()) {
         return None;
     }
     (0..s.len() / 2).map(|k| u8::from_str_radix(&s[2 * k..2 * k + 2], 16).ok()).collect()

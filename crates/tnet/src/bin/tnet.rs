@@ -9,6 +9,7 @@ use tnet::sha256::sha256;
 use tnet::*;
 
 fn unhex(s: &str) -> Vec<u8> {
+    assert!(s.bytes().all(|c| c.is_ascii_hexdigit()), "hex");
     assert!(s.len().is_multiple_of(2), "odd hex length");
     (0..s.len() / 2).map(|k| u8::from_str_radix(&s[2 * k..2 * k + 2], 16).expect("hex")).collect()
 }

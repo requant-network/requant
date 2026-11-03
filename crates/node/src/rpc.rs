@@ -23,6 +23,9 @@ use std::sync::Arc;
 const MAX_BODY: usize = 4 << 20;
 /// Requests in one batch.
 const MAX_BATCH: usize = 100;
+const MAX_HEADER_LINE: usize = 8 << 10;
+const MAX_HEADER_LINES: usize = 64;
+const HEADER_TIME: std::time::Duration = std::time::Duration::from_secs(30);
 /// How long a `getwork` long poll waits for a new block.
 const LONG_POLL: std::time::Duration = std::time::Duration::from_secs(60);
 
@@ -34,7 +37,20 @@ pub fn unhex(s: &str) -> Result<Vec<u8>, String> {
     if !s.len().is_multiple_of(2) {
         return Err("odd hex length".into());
     }
+    // a non-ASCII character would put a slice boundary inside it and panic (with the node's lock held)
+    if !s.bytes().all(|c| c.is_ascii_hexdigit()) {
+        return Err("bad hex".into());
+    }
     (0..s.len() / 2).map(|k| u8::from_str_radix(&s[2 * k..2 * k + 2], 16).map_err(|_| "bad hex".to_string())).collect()
+}
+
+/// Gives a request's slot back when its thread ends, a panicking one included.
+pub(crate) struct Slot<'a>(pub &'a AtomicUsize);
+
+impl Drop for Slot<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, SeqCst);
+    }
 }
 
 fn hash_param(v: &Value) -> Result<Hash, String> {
@@ -73,8 +89,8 @@ pub fn serve_with(
             }
             let (tokens, handler, active) = (tokens.clone(), handler.clone(), active.clone());
             std::thread::spawn(move || {
+                let _slot = Slot(&active);
                 let _ = handle(s, &tokens, max_body, &handler);
-                active.fetch_sub(1, SeqCst);
             });
         }
     });
@@ -147,10 +163,16 @@ fn handle(stream: TcpStream, tokens: &[String], max_body: usize, handler: &Handl
     let mut reader = BufReader::new(stream.try_clone()?);
     let (mut len, mut auth) = (0usize, None::<String>);
     let mut line = String::new();
-    loop {
+    // the header is bounded in lines, line length and time, so a slow or endless one cannot hold a slot
+    let started = std::time::Instant::now();
+    for lines in 0.. {
         line.clear();
-        if reader.read_line(&mut line)? == 0 {
+        let read = (&mut reader).take(MAX_HEADER_LINE as u64).read_line(&mut line)?;
+        if read == 0 {
             return Ok(());
+        }
+        if !line.ends_with('\n') || lines >= MAX_HEADER_LINES || started.elapsed() > HEADER_TIME {
+            return respond(stream, "431 Request Header Fields Too Large", None);
         }
         let l = line.trim_end();
         if l.is_empty() {

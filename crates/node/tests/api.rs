@@ -59,6 +59,14 @@ fn public_api() {
     assert!(head.contains("Access-Control-Allow-Origin: *"), "{head}");
     assert_eq!(info["network"], "regtest");
     assert_eq!(http(explorer, "OPTIONS", "/api/tx", "").0, 204);
+    // hex with a non-ASCII character is a bad request, not a panic with the node's lock held
+    for (verb, path, body) in
+        [("POST", "/api/tx", "a\u{e9}b"), ("GET", "/api/tx/a\u{e9}b", ""), ("GET", "/api/address/a\u{e9}b/balance", "")]
+    {
+        assert!(http(explorer, verb, path, body).0 >= 400, "{verb} {path}");
+    }
+    assert_eq!(http(explorer, "GET", "/api/info", "").0, 200, "the node still answers");
+    assert!(!h.shared.is_poisoned(), "no request panicked with the lock held");
 
     // a block by height and by id, its coinbase, the payee's views
     let (_, _, b1) = http(explorer, "GET", "/api/block/1", "");

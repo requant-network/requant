@@ -32,8 +32,8 @@ pub fn serve(shared: Shared, addr: SocketAddr) -> io::Result<SocketAddr> {
             }
             let shared = shared.clone();
             std::thread::spawn(move || {
+                let _slot = crate::rpc::Slot(&ACTIVE);
                 let _ = handle(&shared, s);
-                ACTIVE.fetch_sub(1, SeqCst);
             });
         }
     });
