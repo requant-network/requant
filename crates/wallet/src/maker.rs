@@ -48,6 +48,20 @@ const TOKEN_GRACE_SECS: u64 = 600;
 /// Swaps whose fees the maker pays at once at most, and how long it lends energy for one.
 const MAX_SPONSORED: usize = 10;
 const LEND_SECS: u64 = 3600;
+/// TRX (in sun) the maker gives away for takers' fees in a day, over all swaps: sent TRX stays with the
+/// taker's address whether or not it locks, so anyone could drain the maker one swap at a time.
+const MAX_FEE_SUN_PER_DAY: u64 = 50_000_000;
+
+/// TRX given away for fees since `since` (seconds): TRX sent instead of energy, and the activation TRX
+/// sent with lent energy.
+fn fee_sun_given(swaps: &[Value], since: u64) -> u64 {
+    swaps
+        .iter()
+        .map(|s| &s["fees"])
+        .filter(|f| f["at"].as_u64().unwrap_or(0) >= since)
+        .map(|f| f["sun"].as_u64().unwrap_or(0) + f["activation_sun"].as_u64().unwrap_or(0))
+        .sum()
+}
 
 /// The maker's TRON side: it receives USDT at its key's address.
 pub struct TronSide {
@@ -427,11 +441,17 @@ impl Maker {
         let me = tron::address_of(&t.key)?;
         let block = t.api.now_block()?;
         let now = block.timestamp_ms / 1000;
+        let given = fee_sun_given(&self.swaps, now.saturating_sub(86_400));
         let lend = t.api.stake_for_energy(&me, need)?;
         let fees = if t.api.can_delegate(&me)? >= lend {
             // activation and bandwidth first: energy cannot be lent to an account that does not exist
             let mut txids = Vec::new();
+            let mut activation = 0;
             if t.api.trx_balance(&taker)? < tron::LOCK_BANDWIDTH_SUN / 2 {
+                if given + tron::LOCK_BANDWIDTH_SUN > MAX_FEE_SUN_PER_DAY {
+                    return Err("the maker's fee budget for today is used: send some TRX for the fees".into());
+                }
+                activation = tron::LOCK_BANDWIDTH_SUN;
                 txids.push(t.api.send_trx(&t.key, &taker, tron::LOCK_BANDWIDTH_SUN)?);
                 for _ in 0..10 {
                     if t.api.exists(&taker)? {
@@ -441,9 +461,12 @@ impl Maker {
                 }
             }
             txids.push(t.api.send_raw(&t.key, &tron::delegate_energy(&t.api.now_block()?, &me, &taker, lend, false))?);
-            json!({"way": "energy", "energy": need, "staked_sun": lend, "txids": txids, "at": now})
+            json!({"way": "energy", "energy": need, "staked_sun": lend, "activation_sun": activation, "txids": txids, "at": now})
         } else {
             let sun = need * t.api.parameter("getEnergyFee")? * 11 / 10 + tron::LOCK_BANDWIDTH_SUN;
+            if given + sun > MAX_FEE_SUN_PER_DAY {
+                return Err("the maker's fee budget for today is used: send some TRX for the fees".into());
+            }
             json!({"way": "trx", "sun": sun, "txids": [t.api.send_trx(&t.key, &taker, sun)?], "at": now})
         };
         self.set(k, json!({"fees": fees}));
@@ -709,5 +732,24 @@ impl Maker {
                 Ok(None)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_fee_budget_counts_a_day_of_trx_given_away() {
+        let swaps = vec![
+            json!({"fees": {"way": "trx", "sun": 30_000_000, "at": 1_000}}),
+            json!({"fees": {"way": "energy", "staked_sun": 900_000_000, "activation_sun": 1_000_000, "at": 2_000}}),
+            json!({"fees": {"way": "trx", "sun": 40_000_000, "at": 10}}),
+            json!({"state": "done"}),
+        ];
+        // lent energy comes back and is not counted; only what stays with the takers is
+        assert_eq!(fee_sun_given(&swaps, 500), 31_000_000);
+        assert_eq!(fee_sun_given(&swaps, 0), 71_000_000);
+        assert!(fee_sun_given(&swaps, 0) > MAX_FEE_SUN_PER_DAY);
     }
 }
