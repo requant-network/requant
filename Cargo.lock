@@ -610,7 +610,7 @@ dependencies = [
 
 [[package]]
 name = "requant-node"
-version = "0.18.2"
+version = "0.18.3"
 dependencies = [
  "ed25519-dalek",
  "getrandom",
