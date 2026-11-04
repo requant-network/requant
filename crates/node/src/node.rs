@@ -142,6 +142,8 @@ pub struct Config {
     /// Write a random RPC token to `<datadir>/<network>/.cookie` at start and require it (with
     /// `rpc_token`, either one is accepted); the file is removed at shutdown.
     pub rpc_cookie: bool,
+    /// Opt-in relay policy after the wallet rollout; never a consensus rule.
+    pub reject_dust_outputs: bool,
     pub connect: Vec<String>,
     /// Mine on the CPU, paying this key hash (practical on regtest only).
     pub mine_to: Option<Hash>,
@@ -1329,7 +1331,7 @@ pub fn start(cfg: Config) -> io::Result<Handle> {
         headers,
         newer_forgiven: HashMap::new(),
         inflight: HashMap::new(),
-        mempool: Mempool::default(),
+        mempool: Mempool::with_policy(crate::mempool::MAX_POOL_BYTES, cfg.reject_dust_outputs),
         index,
         restored,
         book: AddrBook::load(Some(dir.join("peers.txt")), allow_local),

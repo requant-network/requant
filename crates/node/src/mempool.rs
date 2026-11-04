@@ -28,6 +28,8 @@ pub const MAX_POOL_BYTES: usize = 32 << 20;
 pub const MAX_ANCESTORS: usize = 25;
 /// Smallest fee accepted, in atoms per byte of the transaction.
 pub const MIN_FEE_RATE: u64 = 1;
+/// Optional relay policy only; consensus still accepts smaller outputs.
+pub const DUST_OUTPUT: u64 = 1000;
 /// Seconds a transaction may wait in the pool.
 pub const MAX_AGE: u64 = 72 * 3600;
 /// Most pooled transactions (with descendants) one replacement may evict.
@@ -65,6 +67,7 @@ pub struct Mempool {
     bytes: usize,
     seq: u64,
     max_bytes: usize,
+    reject_dust: bool,
 }
 
 impl Default for Mempool {
@@ -88,7 +91,16 @@ fn inputs(tx: &Tx) -> &[requant_consensus::tx::Input] {
 impl Mempool {
     /// A pool holding at most `max_bytes` of transactions.
     pub fn with_limit(max_bytes: usize) -> Mempool {
-        Mempool { txs: HashMap::new(), spends: HashMap::new(), bytes: 0, seq: 0, max_bytes }
+        Self::with_policy(max_bytes, false)
+    }
+
+    /// Enable only after every supported wallet release stops making tiny change.
+    pub fn with_policy(max_bytes: usize, reject_dust: bool) -> Mempool {
+        Mempool { txs: HashMap::new(), spends: HashMap::new(), bytes: 0, seq: 0, max_bytes, reject_dust }
+    }
+
+    pub fn dust_policy(&self) -> bool {
+        self.reject_dust
     }
 
     pub fn len(&self) -> usize {
@@ -196,6 +208,9 @@ impl Mempool {
         }
         tx.check_shape()?;
         let Tx::Transfer { inputs, outputs } = tx else { return Err(Error::Invalid("coinbase outside a block")) };
+        if self.reject_dust && outputs.iter().any(|o| o.value < DUST_OUTPUT) {
+            return Err(Error::Invalid("output below relay dust threshold (1000 atoms)"));
+        }
         requant_consensus::chain::check_activation(&chain.net, tx, chain.height() + 1)?;
         let mut total_in: u64 = 0;
         let mut parents = Vec::new();
@@ -566,7 +581,10 @@ impl Mempool {
                 .iter()
                 .filter(|(_, e)| {
                     // spent or gone, or (after a reorganisation to a lower tip) locked again
-                    inputs(&e.tx).iter().any(|i| self.coin(chain, &i.prev).is_err() || !Self::unlocked_next(chain, i))
+                    (self.reject_dust && e.tx.outputs().iter().any(|o| o.value < DUST_OUTPUT))
+                        || inputs(&e.tx)
+                            .iter()
+                            .any(|i| self.coin(chain, &i.prev).is_err() || !Self::unlocked_next(chain, i))
                         || requant_consensus::chain::check_activation(&chain.net, &e.tx, chain.height() + 1).is_err()
                 })
                 .map(|(id, _)| *id)

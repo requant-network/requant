@@ -517,6 +517,7 @@ fn call(shared: &Shared, method: &str, p: &[Value]) -> Result<Value, String> {
         }
         "getmempoolinfo" => Ok(json!({
             "size": st.mempool.len(), "bytes": st.mempool.bytes(), "max_bytes": st.mempool.max_bytes(),
+            "reject_dust_outputs": st.mempool.dust_policy(), "dust_threshold": crate::mempool::DUST_OUTPUT,
             "min_feerate": crate::mempool::MIN_FEE_RATE, "max_tx_bytes": crate::mempool::MAX_TX_BYTES,
         })),
         "estimatefee" => {
