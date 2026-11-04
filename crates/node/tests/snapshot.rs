@@ -25,6 +25,7 @@ fn node(dir: &Path, mine: bool) -> Handle {
         max_reorg: 100,
         rpc_token: None,
         rpc_cookie: false,
+        reject_dust_outputs: false,
         peer_interval: Duration::from_millis(100),
         discover: false,
         explorer: None,

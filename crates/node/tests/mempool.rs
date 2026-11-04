@@ -268,3 +268,53 @@ fn a_parent_nothing_pays_for_leaves_the_pool() {
     assert!(!pool.contains(&child.txid()) && !pool.contains(&parent_id), "the parent left with its payer");
     assert_eq!(pool.len(), 1);
 }
+
+#[test]
+fn dust_policy_is_opt_in_and_packages_cannot_bypass_it() {
+    let (chain, coins) = funded(2);
+    let me = pkh(&key().verifying_key().to_bytes());
+    let make = |dust| {
+        let value = chain.coin(&coins[0]).unwrap().output.value;
+        let mut tx = Tx::Transfer {
+            inputs: vec![Input::new(coins[0])],
+            outputs: vec![Output { value: dust, pkh: me }, Output { value: value - 2000 - dust, pkh: me }],
+        };
+        tx.sign(&chain.net.chain_id, &[&key()]);
+        tx
+    };
+    let dust = make(999);
+    assert!(Mempool::default().add(dust.clone(), &chain).is_ok());
+    let mut strict = Mempool::with_policy(32 << 20, true);
+    assert_eq!(strict.add(dust.clone(), &chain), Err(Error::Invalid("output below relay dust threshold (1000 atoms)")));
+    let child = spend(&chain, OutPoint { txid: dust.txid(), vout: 1 }, dust.outputs()[1].value, 2000);
+    assert!(strict.add_package(vec![dust, child], &chain).is_err());
+    assert!(strict.is_empty(), "package admission remains atomic");
+    assert!(strict.add(make(1000), &chain).is_ok());
+}
+
+#[test]
+fn dust_in_a_valid_block_is_still_consensus_valid_and_can_be_spent() {
+    let (mut chain, coins) = funded(1);
+    let me = pkh(&key().verifying_key().to_bytes());
+    let value = chain.coin(&coins[0]).unwrap().output.value;
+    let mut tx = Tx::Transfer {
+        inputs: vec![Input::new(coins[0])],
+        outputs: vec![Output { value: 999, pkh: me }, Output { value: value - 2999, pkh: me }],
+    };
+    tx.sign(&chain.net.chain_id, &[&key()]);
+    let id = tx.txid();
+    let (tip, h) = (chain.tip(), chain.height() + 1);
+    let mut block = chain.template_on(&tip, &me, vec![tx], chain.net.genesis_time + 60 * h);
+    let seed = chain.epoch_seed(&tip, h);
+    let epoch = chain.epoch(&seed);
+    block.claim = mine(&chain.net, &epoch, &block.header, 0, 1000).unwrap();
+    chain.accept(block, u64::MAX / 2).unwrap();
+    let large = chain.coin(&OutPoint { txid: id, vout: 1 }).unwrap().output.value;
+    let mut spend_old = Tx::Transfer {
+        inputs: vec![Input::new(OutPoint { txid: id, vout: 0 }), Input::new(OutPoint { txid: id, vout: 1 })],
+        outputs: vec![Output { value: large + 999 - 2000, pkh: me }],
+    };
+    spend_old.sign(&chain.net.chain_id, &[&key(), &key()]);
+    let mut strict = Mempool::with_policy(32 << 20, true);
+    assert!(strict.add(spend_old, &chain).is_ok(), "existing small inputs remain spendable");
+}

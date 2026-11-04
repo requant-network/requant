@@ -163,7 +163,7 @@ pub fn build_sweep(
     Ok((signed(net, key, &chosen, outputs), sent, fee))
 }
 
-/// Pay `amount` to `to` with a fixed `fee` (kept for callers that set the fee themselves).
+/// Pay `amount` with at least `fee`; sub-threshold change is added to the fee.
 pub fn build_transfer(
     net: &Network,
     key: &SigningKey,
@@ -190,7 +190,7 @@ pub fn build_transfer(
         return Err(format!("insufficient funds: {} spendable, {} needed", format_amount(total), format_amount(need)));
     }
     let mut outputs = vec![Output { value: amount, pkh: *to }];
-    if total > need {
+    if total - need >= DUST_CHANGE {
         outputs.push(Output { value: total - need, pkh: owner_of(key) });
     }
     Ok(signed(net, key, &chosen, outputs))
@@ -227,7 +227,7 @@ mod tests {
         tx.check_standalone(&net.chain_id).unwrap();
         let Tx::Transfer { inputs, outputs } = &tx else { panic!() };
         assert_eq!(inputs.len(), 1);
-        assert_eq!(outputs.iter().map(|o| o.value).collect::<Vec<_>>(), [900, 50]);
+        assert_eq!(outputs.iter().map(|o| o.value).collect::<Vec<_>>(), [900]);
         assert!(build_transfer(&net, &key, &coins, &[9; 32], 1300, 1).is_err());
     }
 
@@ -292,8 +292,15 @@ use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 const KEY_TAG: &str = "requant-key:1:argon2id";
 /// Argon2id cost: 64 MiB, 3 passes, 1 lane.
 const KDF: (u32, u32, u32) = (65536, 3, 1);
+/// Import ceilings match the existing native client; creation costs are unchanged.
+pub const MAX_KDF_MEMORY_KIB: u32 = 131072;
+pub const MAX_KDF_PASSES: u32 = 6;
+pub const MAX_KDF_LANES: u32 = 4;
 
 fn kdf(pass: &str, salt: &[u8], m: u32, t: u32, p: u32) -> Result<[u8; 32], &'static str> {
+    if m > MAX_KDF_MEMORY_KIB || t > MAX_KDF_PASSES || p > MAX_KDF_LANES {
+        return Err("unsupported key-derivation cost");
+    }
     let params = argon2::Params::new(m, t, p, Some(32)).map_err(|_| "bad key-derivation parameters")?;
     let mut out = [0u8; 32];
     argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params)
@@ -423,5 +430,34 @@ mod keyfile {
         assert!(decrypt_key(&bad, Some("correct horse")).is_err());
         // unencrypted files still load
         assert_eq!(decrypt_key(&format!("{}\n", hexs(&secret)), None), Ok(secret));
+    }
+}
+
+#[cfg(test)]
+mod import_and_dust_limits {
+    use super::*;
+    #[test]
+    fn import_cost_is_rejected_before_argon2_allocation() {
+        for (m, t, p) in [(MAX_KDF_MEMORY_KIB + 1, 3, 1), (65536, MAX_KDF_PASSES + 1, 1), (65536, 3, MAX_KDF_LANES + 1)]
+        {
+            assert_eq!(kdf("fixture-password", &[1; 16], m, t, p), Err("unsupported key-derivation cost"));
+        }
+    }
+    #[test]
+    fn dust_change_boundaries_preserve_payments_and_exact_fees() {
+        let key = SigningKey::from_bytes(&[5; 32]);
+        let fee = fee_for(1, 2, 1);
+        for change in [0, 1, 999, 1000, 1001] {
+            let input = 10000 + fee + change;
+            let coins = [Spendable { op: OutPoint { txid: [3; 32], vout: 0 }, value: input, owner: owner_of(&key) }];
+            let (tx, _, paid) = plan_payment(&coins, &[([9; 32], 10000)], 1, [8; 32]).unwrap();
+            assert_eq!(tx.outputs()[0].value, 10000);
+            assert_eq!(tx.outputs().len(), if change < DUST_CHANGE { 1 } else { 2 });
+            assert_eq!(input - tx.outputs().iter().map(|o| o.value).sum::<u64>(), paid);
+            assert_eq!(paid, fee + if change < DUST_CHANGE { change } else { 0 });
+            let legacy = build_transfer(&Network::regtest(), &key, &coins, &[9; 32], 10000, fee).unwrap();
+            assert_eq!(legacy.outputs().len(), tx.outputs().len());
+            assert_eq!(input - legacy.outputs().iter().map(|o| o.value).sum::<u64>(), paid);
+        }
     }
 }
