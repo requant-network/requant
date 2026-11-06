@@ -15,7 +15,7 @@ chain may be reset when the rules change (a reset changes the genesis time in `c
 | Faucet | https://requant.network/faucet (10 RQT a day per address); top it up at `trq1q8pqnx3uqer6jcxszen4tg3hylh5q645ae23yvra62a2nu98slqaqvvyume` |
 | Node | `requantd` for Linux and Windows: [releases](https://github.com/requant-network/requant/releases/latest) |
 | Wallets | [Web Wallet](https://requant.network/wallet/), desktop, Android and extension apps ([wallets](https://requant.network/docs/wallet)); `requant-wallet` 0.10.0 for Linux, Windows and Android: [wallet release](https://github.com/requant-network/requant/releases/tag/wallet-v0.10.0) |
-| GPU miner | CPPminer `--algo tnet` (NVIDIA CUDA; AMD and Intel with `--backend opencl`): [releases](https://github.com/danifest751/CPPminer/releases/latest) |
+| Miner | CPPminer `--algo tnet` (NVIDIA CUDA; AMD and Intel with `--backend opencl`; Android phones on the CPU): [releases](https://github.com/danifest751/CPPminer/releases/latest) |
 | Development fund | `trq1qvfkg4mygtgkcthzsnjdpgqdujda8vm92cg62vas08aylluhf5gqsezeems` (6%, `CHAIN.md` §8) |
 
 ## Run a node
@@ -167,10 +167,16 @@ keys never leave the wallet), and the node learns which addresses are asked abou
 
 ## Get the miner
 
-The GPU miner is **CPPminer** (`--algo tnet`, NVIDIA GPUs from Turing / RTX 20xx on), released at
+The miner is **CPPminer** (`--algo tnet`), released at
 [danifest751/CPPminer](https://github.com/danifest751/CPPminer/releases/latest): `cppminer-win64-cuda.zip` for Windows, `cppminer-linux-x64-cuda.tar.gz`
-for Linux. Nothing else is needed besides a current NVIDIA driver; check the GPU with
+for Linux, `cppminer-android-arm64.tar.gz` for phones. On a computer it needs a current GPU driver: NVIDIA from
+Turing / RTX 20xx on, or AMD and Intel with `--backend opencl`. Check the device with
 `cppminer --algo tnet --selftest`. Source and build notes: `docs/tnet.md` in that repository.
+
+A phone mines on its CPU, one file with no libraries beside it, and needs Android 8 or newer on arm64. So far it has only
+been run from `adb shell`. It gets hot and drains the battery, so keep it on a charger; a VPN on the phone also carries the
+miner's traffic and can cut it off from the pool. See
+[the release notes](https://github.com/danifest751/CPPminer/releases/tag/v0.5-fork.13).
 
 ## Mine in the pool (no node needed)
 
@@ -190,7 +196,9 @@ cppminer --algo tnet --rpc 127.0.0.1:19334 --payee <key hash from requant-wallet
 ```
 
 With CPPminer v0.5-fork.12: a CMP 50HX (Turing) does about 4.2 M tickets/s, an RTX 3090 about 5.3 M sustained,
-an Intel Arc A380 0.88 M and an integrated Radeon 780M 0.14 M.
+an Intel Arc A380 0.88 M and an integrated Radeon 780M 0.14 M. With v0.5-fork.13 a CMP 50HX in the pool does the same 4.2 M,
+and phones on their CPU much less: a POCO F7 Ultra (Snapdragon 8 Elite) 0.045-0.06 M, a POCO X3 Pro (Snapdragon 860)
+0.007-0.013 M.
 
 ## Known limits of this version
 

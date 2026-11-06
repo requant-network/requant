@@ -22,10 +22,10 @@ Nothing here is a security or investment claim.
 2. **Test coins.** The [faucet](https://requant.network/faucet) sends 10 RQT to your address, once a day per
    address. Mining and ordinary transfers are other sources of test RQT. Mined more than you need? Top the faucet up:
    `trq1q8pqnx3uqer6jcxszen4tg3hylh5q645ae23yvra62a2nu98slqaqvvyume`.
-3. **Mine.** The GPU miner is **CPPminer**: NVIDIA Turing or newer on tensor cores (CUDA), and AMD and Intel
-   GPUs over OpenCL (`--backend opencl`; Intel Arc on its XMX engines). Download
-   `cppminer-win64-cuda.zip` or `cppminer-linux-x64-cuda.tar.gz` from the
-   [CPPminer releases](https://github.com/danifest751/CPPminer/releases/latest), check the GPU with
+3. **Mine.** The miner is **CPPminer**: NVIDIA Turing or newer on tensor cores (CUDA), AMD and Intel GPUs over
+   OpenCL (`--backend opencl`; Intel Arc on its XMX engines), and Android phones on the CPU. Download
+   `cppminer-win64-cuda.zip`, `cppminer-linux-x64-cuda.tar.gz` or `cppminer-android-arm64.tar.gz` from the
+   [CPPminer releases](https://github.com/danifest751/CPPminer/releases/latest), check the device with
    `cppminer --algo tnet --selftest`, and mine in the pool:
 
    ```sh
@@ -78,7 +78,7 @@ cargo test --release -- --ignored            # frozen-parameter vectors (512 MiB
 cargo run --release --bin tnet -- bench      # CPU verification time at the v1 parameters
 ```
 
-GPU miner: CPPminer `--algo tnet` (see [Try the test network](#try-the-test-network)); it mines in the pool
+Miner: CPPminer `--algo tnet` (see [Try the test network](#try-the-test-network)); it mines in the pool
 or through a node's `getwork`/`submitwork`. GPU benchmark and parity tool: [`miner/cuda/`](miner/cuda/README.md).
 
 A local regtest node that mines on the CPU (instant blocks, small work function):

@@ -87,6 +87,8 @@ test network.
 - [x] Mining pool in the node (`--pool`, node 0.4): the node's getwork/submitwork with a share target,
       PPLNS rewards credited at maturity, automatic multi-output payouts, state in `pool.json`, explorer
       page `/pool`; CPPminer sends its payee with each share.
+- [x] Phones: CPPminer v0.5-fork.13 mines on the CPU of Android phones (AArch64 DotProd and I8MM), one file with no
+      libraries beside it. A POCO X3 Pro mined block 11820 of the test network.
 
 ## 4. Network launch
 

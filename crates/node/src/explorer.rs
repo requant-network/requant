@@ -1023,9 +1023,10 @@ fn pool_page(s: &serde_json::Value, host: &str) -> String {
         "<div class=\"panel\"><h3>Start mining</h3><ol class=\"steps\">\
          <li><b>Get a wallet address.</b> <code>requant-wallet keygen my.key</code> prints your address and key hash \
          (<a href=\"https://github.com/requant-network/requant/releases/latest\">wallet download</a>).</li>\
-         <li><b>Download CPPminer</b> (NVIDIA, RTX 20xx or newer):<div class=\"dl\">\
+         <li><b>Download CPPminer</b> (NVIDIA RTX 20xx or newer, AMD, Intel, Android phones):<div class=\"dl\">\
          <a class=\"btn pri\" href=\"https://github.com/danifest751/CPPminer/releases/latest\">Windows</a>\
-         <a class=\"btn\" href=\"https://github.com/danifest751/CPPminer/releases/latest\">Linux</a></div></li>\
+         <a class=\"btn\" href=\"https://github.com/danifest751/CPPminer/releases/latest\">Linux</a>\
+         <a class=\"btn\" href=\"https://github.com/danifest751/CPPminer/releases/latest\">Android</a></div></li>\
          <li><b>Run it</b> with your key hash; <code>--worker</code> names the device:\
          <code class=\"cmd2\">cppminer --algo tnet --rpc {endpoint} --payee YOUR_KEY_HASH --worker rig1</code></li>\
          </ol><h3 style=\"margin-top:4px\">Your statistics</h3>\
